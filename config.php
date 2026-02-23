@@ -11,7 +11,7 @@ $config = [
         'mtex_status' => 'https://status.mtex.dev',
         'api_base'    => 'https://status.xpsystems.eu/api',
         'playground'  => 'https://api-sandbox.de/playground.html',
-        'version'     => '1.2.0',
+        'version'     => '1.2.1',
     ],
     'cache' => [
         'ttl'  => 90,
@@ -86,7 +86,7 @@ $config = [
             'group'       => 'Hosting',
             'url'         => 'https://eudomains.eu',
             'ping_url'    => 'https://eudomains.eu',
-            'is_deployed' => true,
+            'is_deployed' => false,
         ],
         [
             'slug'        => 'eushare-eu',
@@ -94,7 +94,7 @@ $config = [
             'group'       => 'Hosting',
             'url'         => 'https://eushare.eu',
             'ping_url'    => 'https://eushare.eu',
-            'is_deployed' => true,
+            'is_deployed' => false,
         ],
         [
             'slug'        => 'swiftshare-eu',
@@ -102,7 +102,7 @@ $config = [
             'group'       => 'Hosting',
             'url'         => 'https://swiftshare.eu',
             'ping_url'    => 'https://swiftshare.eu',
-            'is_deployed' => true,
+            'is_deployed' => false,
         ],
         [
             'slug'        => 'dsc-pics',
@@ -110,7 +110,7 @@ $config = [
             'group'       => 'Hosting',
             'url'         => 'https://dsc.pics',
             'ping_url'    => 'https://dsc.pics',
-            'is_deployed' => true,
+            'is_deployed' => false,
         ],
 
         // ── Sovereignty ─────────────────────────────────────────────────────
@@ -128,7 +128,7 @@ $config = [
             'group'       => 'Sovereignty',
             'url'         => 'https://mail-free.eu',
             'ping_url'    => 'https://mail-free.eu',
-            'is_deployed' => true,
+            'is_deployed' => false,
         ],
         [
             'slug'        => 'eu-search-org',
