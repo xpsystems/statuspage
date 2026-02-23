@@ -1,0 +1,28 @@
+Options -Indexes
+Options -MultiViews
+
+RewriteEngine On
+RewriteBase /
+
+RewriteCond %{REQUEST_FILENAME} -f
+RewriteRule ^ - [L]
+
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+RewriteRule ^ index.php [QSA,L]
+
+<FilesMatch "^(config\.php|cache/)">
+  Require all denied
+</FilesMatch>
+
+<FilesMatch "\.(css|js|woff2?|ttf|ico|png|jpg|svg)$">
+  Header set Cache-Control "public, max-age=3600"
+</FilesMatch>
+
+Header set X-Content-Type-Options "nosniff"
+Header set X-Frame-Options "SAMEORIGIN"
+Header set Referrer-Policy "strict-origin-when-cross-origin"
+
+ErrorDocument 404 /index.php
+ErrorDocument 500 /index.php
