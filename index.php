@@ -6,6 +6,19 @@ $e   = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE
 $uri = strtok($_SERVER['REQUEST_URI'] ?? '/', '?');
 $uri = '/' . trim($uri, '/');
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Returns only services that are marked as deployed (is_deployed === true).
+ * Services without the key, or with is_deployed set to false, are excluded.
+ */
+function deployed_services(array $config): array
+{
+    return array_values(
+        array_filter($config['services'], fn($s) => !empty($s['is_deployed']))
+    );
+}
+
 function get_cached_status(array $config): array
 {
     $cache_file = $config['cache']['path'];
@@ -30,11 +43,12 @@ function get_cached_status(array $config): array
 
 function refresh_status(array $config): array
 {
-    $results  = [];
-    $timeout  = $config['ping']['timeout'];
-    $ua       = $config['ping']['useragent'];
+    $results = [];
+    $timeout = $config['ping']['timeout'];
+    $ua      = $config['ping']['useragent'];
 
-    foreach ($config['services'] as $service) {
+    // Only ping services that are deployed.
+    foreach (deployed_services($config) as $service) {
         $results[$service['slug']] = ping_url(
             $service['ping_url'],
             $timeout,
@@ -79,8 +93,8 @@ function ping_url(string $url, int $timeout, string $ua): array
     ]);
 
     curl_exec($ch);
-    $code    = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $err     = curl_errno($ch);
+    $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err  = curl_errno($ch);
     curl_close($ch);
 
     $latency = (int) round((microtime(true) - $start) * 1000);
@@ -101,23 +115,45 @@ function build_full_status(array $config): array
     $cached     = get_cached_status($config);
     $raw        = $cached['services'] ?? [];
     $checked_at = $cached['checked_at'] ?? time();
-    $services   = [];
 
-    foreach ($config['services'] as $svc) {
+    $services      = [];
+    $not_deployed  = [];
+
+    // Deployed services — carry ping results and participate in overall status.
+    foreach (deployed_services($config) as $svc) {
         $result     = $raw[$svc['slug']] ?? ['status' => 'unknown', 'code' => null, 'latency_ms' => null];
         $services[] = [
-            'slug'       => $svc['slug'],
-            'name'       => $svc['name'],
-            'group'      => $svc['group'],
-            'url'        => $svc['url'],
-            'status'     => $result['status'],
-            'http_code'  => $result['code'],
-            'latency_ms' => $result['latency_ms'],
+            'slug'        => $svc['slug'],
+            'name'        => $svc['name'],
+            'group'       => $svc['group'],
+            'url'         => $svc['url'],
+            'is_deployed' => true,
+            'status'      => $result['status'],
+            'http_code'   => $result['code'],
+            'latency_ms'  => $result['latency_ms'],
         ];
     }
 
-    $statuses     = array_column($services, 'status');
-    $down_count   = count(array_filter($statuses, fn($s) => $s === 'down'));
+    // Non-deployed services — shown in the UI as "Not deployed"; never affect overall status.
+    foreach ($config['services'] as $svc) {
+        if (!empty($svc['is_deployed'])) {
+            continue;
+        }
+        $not_deployed[] = [
+            'slug'        => $svc['slug'],
+            'name'        => $svc['name'],
+            'group'       => $svc['group'],
+            'url'         => $svc['url'],
+            'is_deployed' => false,
+            'status'      => 'not_deployed',
+            'http_code'   => null,
+            'latency_ms'  => null,
+        ];
+    }
+
+    // Overall status is derived only from deployed services.
+    $statuses       = array_column($services, 'status');
+    $down_count     = count(array_filter($statuses, fn($s) => $s === 'down'));
     $degraded_count = count(array_filter($statuses, fn($s) => $s === 'degraded'));
 
     if ($down_count > 0) {
@@ -131,9 +167,11 @@ function build_full_status(array $config): array
     return [
         'overall'    => $overall,
         'checked_at' => $checked_at,
-        'services'   => $services,
+        'services'   => array_merge($services, $not_deployed),
     ];
 }
+
+// ── API routes ────────────────────────────────────────────────────────────────
 
 if (str_starts_with($uri, '/api')) {
     header('Content-Type: application/json; charset=utf-8');
@@ -158,16 +196,18 @@ if (str_starts_with($uri, '/api')) {
     }
 
     if ($uri === '/api/status') {
-        $data = build_full_status($config);
+        $data     = build_full_status($config);
+        $deployed = array_filter($data['services'], fn($s) => $s['is_deployed']);
         echo json_encode([
             'overall'    => $data['overall'],
             'checked_at' => $data['checked_at'],
             'summary'    => [
-                'total'      => count($data['services']),
-                'up'         => count(array_filter($data['services'], fn($s) => $s['status'] === 'up')),
-                'degraded'   => count(array_filter($data['services'], fn($s) => $s['status'] === 'degraded')),
-                'down'       => count(array_filter($data['services'], fn($s) => $s['status'] === 'down')),
-                'unknown'    => count(array_filter($data['services'], fn($s) => $s['status'] === 'unknown')),
+                'total'        => count($deployed),
+                'up'           => count(array_filter($deployed, fn($s) => $s['status'] === 'up')),
+                'degraded'     => count(array_filter($deployed, fn($s) => $s['status'] === 'degraded')),
+                'down'         => count(array_filter($deployed, fn($s) => $s['status'] === 'down')),
+                'unknown'      => count(array_filter($deployed, fn($s) => $s['status'] === 'unknown')),
+                'not_deployed' => count(array_filter($data['services'], fn($s) => !$s['is_deployed'])),
             ],
         ], JSON_PRETTY_PRINT);
         exit;
@@ -209,6 +249,8 @@ if (str_starts_with($uri, '/api')) {
     ], JSON_PRETTY_PRINT);
     exit;
 }
+
+// ── HTML page ─────────────────────────────────────────────────────────────────
 
 $full_data  = build_full_status($config);
 $overall    = $full_data['overall'];
@@ -336,7 +378,7 @@ $api_base        = $config['site']['api_base'];
         <div class="service-list">
           <?php foreach ($group_services as $svc): ?>
           <div
-            class="service-row"
+            class="service-row<?= !$svc['is_deployed'] ? ' service-row--not-deployed' : '' ?>"
             data-slug="<?= $e($svc['slug']) ?>"
             data-status="<?= $e($svc['status']) ?>"
           >
@@ -355,10 +397,11 @@ $api_base        = $config['site']['api_base'];
               <?php endif; ?>
               <span class="service-status-label service-status-label--<?= $e($svc['status']) ?>">
                 <?= match($svc['status']) {
-                    'up'       => 'Operational',
-                    'degraded' => 'Degraded',
-                    'down'     => 'Outage',
-                    default    => 'Unknown',
+                    'up'           => 'Operational',
+                    'degraded'     => 'Degraded',
+                    'down'         => 'Outage',
+                    'not_deployed' => 'Not Deployed',
+                    default        => 'Unknown',
                 } ?>
               </span>
               <?php if ($svc['http_code'] !== null): ?>
