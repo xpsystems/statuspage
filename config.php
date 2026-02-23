@@ -9,9 +9,9 @@ $config = [
         'org_url'     => 'https://xpsystems.eu',
         'github_url'  => 'https://github.com/xpsystems/statuspage',
         'mtex_status' => 'https://status.mtex.dev',
-        'api_base'    => 'https://status.xpsystems.eu/api',
+        'api_base'    => 'https://status.xpsystems.eu',
         'playground'  => 'https://api-sandbox.de/playground.html',
-        'version'     => '1.2.1',
+        'version'     => '1.3.0',
     ],
     'cache' => [
         'ttl'  => 90,
@@ -162,7 +162,7 @@ $config = [
             'group'       => 'Developer',
             'url'         => 'https://status.xpsys.de',
             'ping_url'    => 'https://status.xpsys.de/api/ping',
-            'is_deployed' => false,   // ← set true once node-2 is live
+            'is_deployed' => false,
         ],
     ],
     'groups' => ['Core', 'Hosting', 'Sovereignty', 'Developer'],
