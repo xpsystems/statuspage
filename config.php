@@ -11,7 +11,7 @@ $config = [
         'mtex_status' => 'https://status.mtex.dev',
         'api_base'    => 'https://status.xpsystems.eu',
         'playground'  => 'https://api-sandbox.de/playground.html',
-        'version'     => '1.3.0',
+        'version'     => '1.3.1',
     ],
     'cache' => [
         'ttl'  => 90,

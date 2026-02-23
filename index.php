@@ -447,7 +447,7 @@ $api_base        = $config['site']['api_base'];
 
   <div class="section-divider">
     <svg viewBox="0 0 1440 60" preserveAspectRatio="none" aria-hidden="true">
-      <path d="M0,0 Q360,60 720,30 Q1080,0 1440,60 L1440,60 L0,60 Z" fill="#0d0d14"/>
+      <path d="M0,0 Q360,60 720,30 Q1080,0 1440,60 L1440,60 L0,60 Z" fill="currentColor"/>
     </svg>
   </div>
 

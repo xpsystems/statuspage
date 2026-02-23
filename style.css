@@ -848,3 +848,7 @@ code {
     align-items: flex-start;
   }
 }
+
+.section-divider {
+    color: var(--bg-alt);
+}
