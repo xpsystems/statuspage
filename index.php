@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/database.php';
 
 $e   = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 $uri = strtok($_SERVER['REQUEST_URI'] ?? '/', '?');
@@ -8,10 +9,6 @@ $uri = '/' . trim($uri, '/');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/**
- * Returns only services that are marked as deployed (is_deployed === true).
- * Services without the key, or with is_deployed set to false, are excluded.
- */
 function deployed_services(array $config): array
 {
     return array_values(
@@ -19,6 +16,9 @@ function deployed_services(array $config): array
     );
 }
 
+/**
+ * Returns current status from cache, running check.php if cache is stale.
+ */
 function get_cached_status(array $config): array
 {
     $cache_file = $config['cache']['path'];
@@ -38,76 +38,59 @@ function get_cached_status(array $config): array
         }
     }
 
-    return refresh_status($config);
+    // Cache stale or missing — run check.php inline
+    require __DIR__ . '/check.php';
+    return $payload; // check.php sets $payload
 }
 
-function refresh_status(array $config): array
+// ── History helpers (DB-aware) ────────────────────────────────────────────────
+
+function load_history(array $config): array
 {
-    $results = [];
-    $timeout = $config['ping']['timeout'];
-    $ua      = $config['ping']['useragent'];
-
-    // Only ping services that are deployed.
-    foreach (deployed_services($config) as $service) {
-        $results[$service['slug']] = ping_url(
-            $service['ping_url'],
-            $timeout,
-            $ua
-        );
+    $driver = $config['db']['driver'] ?? 'none';
+    if ($driver !== 'none') {
+        try {
+            $pdo = db_connect($config);
+            return db_history_full($pdo, 1440);
+        } catch (\Throwable $e) {
+            error_log('[xps-index] DB error: ' . $e->getMessage());
+        }
     }
-
-    $payload = [
-        'checked_at' => time(),
-        'services'   => $results,
-    ];
-
-    file_put_contents(
-        $config['cache']['path'],
-        json_encode($payload, JSON_PRETTY_PRINT)
-    );
-
-    return $payload;
+    // JSON fallback
+    $path = $config['history']['path'];
+    if (!file_exists($path)) return [];
+    $raw = json_decode((string) file_get_contents($path), true);
+    return is_array($raw) ? $raw : [];
 }
 
-function ping_url(string $url, int $timeout, string $ua): array
+function history_for_slug(array $history, string $slug, int $limit = 90): array
 {
-    $start = microtime(true);
-
-    if (!function_exists('curl_init')) {
-        return ['status' => 'unknown', 'code' => null, 'latency_ms' => null];
+    $out = [];
+    foreach ($history as $entry) {
+        $svc = $entry['services'][$slug] ?? null;
+        if ($svc === null) continue;
+        $out[] = [
+            'ts'         => (int) $entry['ts'],
+            'status'     => $svc['status']     ?? 'unknown',
+            'latency_ms' => $svc['latency_ms'] ?? null,
+            'http_code'  => $svc['http_code']  ?? $svc['code'] ?? null,
+        ];
     }
+    return array_slice($out, -$limit);
+}
 
-    $ch = curl_init();
-    curl_setopt_array($ch, [
-        CURLOPT_URL            => $url,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => $timeout,
-        CURLOPT_CONNECTTIMEOUT => $timeout,
-        CURLOPT_USERAGENT      => $ua,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_MAXREDIRS      => 3,
-        CURLOPT_NOBODY         => true,
-        CURLOPT_SSL_VERIFYPEER => true,
-        CURLOPT_SSL_VERIFYHOST => 2,
-        CURLOPT_HEADER         => false,
-    ]);
-
-    curl_exec($ch);
-    $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $err  = curl_errno($ch);
-    curl_close($ch);
-
-    $latency = (int) round((microtime(true) - $start) * 1000);
-
-    if ($err !== 0 || $code === 0) {
-        return ['status' => 'down', 'code' => null, 'latency_ms' => $latency];
+function history_for_slug_db(array $config, string $slug, int $limit = 90): array
+{
+    $driver = $config['db']['driver'] ?? 'none';
+    if ($driver !== 'none') {
+        try {
+            $pdo = db_connect($config);
+            return db_history_for_slug($pdo, $slug, $limit);
+        } catch (\Throwable $e) {
+            error_log('[xps-index] DB error: ' . $e->getMessage());
+        }
     }
-
-    if ($code >= 500) {
-        return ['status' => 'degraded', 'code' => $code, 'latency_ms' => $latency];
-    }
-
-    return ['status' => 'up', 'code' => $code, 'latency_ms' => $latency];
+    return history_for_slug(load_history($config), $slug, $limit);
 }
 
 function build_full_status(array $config): array
@@ -116,10 +99,9 @@ function build_full_status(array $config): array
     $raw        = $cached['services'] ?? [];
     $checked_at = $cached['checked_at'] ?? time();
 
-    $services      = [];
-    $not_deployed  = [];
+    $services     = [];
+    $not_deployed = [];
 
-    // Deployed services — carry ping results and participate in overall status.
     foreach (deployed_services($config) as $svc) {
         $result     = $raw[$svc['slug']] ?? ['status' => 'unknown', 'code' => null, 'latency_ms' => null];
         $services[] = [
@@ -129,16 +111,13 @@ function build_full_status(array $config): array
             'url'         => $svc['url'],
             'is_deployed' => true,
             'status'      => $result['status'],
-            'http_code'   => $result['code'],
+            'http_code'   => $result['code'] ?? null,
             'latency_ms'  => $result['latency_ms'],
         ];
     }
 
-    // Non-deployed services — shown in the UI as "Not deployed"; never affect overall status.
     foreach ($config['services'] as $svc) {
-        if (!empty($svc['is_deployed'])) {
-            continue;
-        }
+        if (!empty($svc['is_deployed'])) continue;
         $not_deployed[] = [
             'slug'        => $svc['slug'],
             'name'        => $svc['name'],
@@ -151,23 +130,20 @@ function build_full_status(array $config): array
         ];
     }
 
-    // Overall status is derived only from deployed services.
     $statuses       = array_column($services, 'status');
     $down_count     = count(array_filter($statuses, fn($s) => $s === 'down'));
     $degraded_count = count(array_filter($statuses, fn($s) => $s === 'degraded'));
 
-    if ($down_count > 0) {
-        $overall = 'major_outage';
-    } elseif ($degraded_count > 0) {
-        $overall = 'partial_outage';
-    } else {
-        $overall = 'operational';
-    }
+    $overall = match(true) {
+        $down_count > 0     => 'major_outage',
+        $degraded_count > 0 => 'partial_outage',
+        default             => 'operational',
+    };
 
     return [
         'overall'    => $overall,
         'checked_at' => $checked_at,
-        'services'   => array_merge($services, $not_deployed),
+        'services'   => [...$services, ...$not_deployed],
     ];
 }
 
@@ -239,6 +215,52 @@ if (str_starts_with($uri, '/api')) {
         exit;
     }
 
+    if ($uri === '/api/history') {
+        $limit = min((int) ($_GET['limit'] ?? 90), 1440);
+        $driver = $config['db']['driver'] ?? 'none';
+        if ($driver !== 'none') {
+            try {
+                $pdo = db_connect($config);
+                $out = db_history_full($pdo, $limit);
+            } catch (\Throwable $ex) {
+                error_log('[xps-api] DB error: ' . $ex->getMessage());
+                $history = load_history($config);
+                $out     = array_slice($history, -$limit);
+            }
+        } else {
+            $history = load_history($config);
+            $out     = array_slice($history, -$limit);
+        }
+        echo json_encode(['count' => count($out), 'entries' => $out], JSON_PRETTY_PRINT);
+        exit;
+    }
+
+    if (preg_match('#^/api/history/([a-z0-9\-]+)$#', $uri, $m)) {
+        $slug  = $m[1];
+        $limit = min((int) ($_GET['limit'] ?? 90), 1440);
+        $entries = history_for_slug_db($config, $slug, $limit);
+        if (empty($entries)) {
+            http_response_code(404);
+            echo json_encode(['error' => 'No history found for slug', 'slug' => $slug], JSON_PRETTY_PRINT);
+            exit;
+        }
+        $latencies = array_filter(array_column($entries, 'latency_ms'), fn($v) => $v !== null);
+        echo json_encode([
+            'slug'    => $slug,
+            'count'   => count($entries),
+            'stats'   => [
+                'avg_latency_ms' => count($latencies) ? (int) round(array_sum($latencies) / count($latencies)) : null,
+                'min_latency_ms' => count($latencies) ? (int) min($latencies) : null,
+                'max_latency_ms' => count($latencies) ? (int) max($latencies) : null,
+                'uptime_pct'     => count($entries)
+                    ? round(count(array_filter($entries, fn($e) => $e['status'] === 'up')) / count($entries) * 100, 2)
+                    : null,
+            ],
+            'entries' => $entries,
+        ], JSON_PRETTY_PRINT);
+        exit;
+    }
+
     http_response_code(404);
     echo json_encode([
         'error'     => 'Unknown API endpoint',
@@ -264,6 +286,12 @@ foreach ($config['groups'] as $group) {
     );
 }
 
+// Load history for sparklines (last 60 checks per deployed service)
+$svc_history = [];
+foreach (deployed_services($config) as $svc) {
+    $svc_history[$svc['slug']] = history_for_slug_db($config, $svc['slug'], 60);
+}
+
 $playground_base = $config['site']['playground'];
 $api_base        = $config['site']['api_base'];
 ?>
@@ -278,7 +306,7 @@ $api_base        = $config['site']['api_base'];
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
@@ -288,8 +316,7 @@ $api_base        = $config['site']['api_base'];
       <?= $e($config['site']['org']) ?>
     </a>
     <div class="nav-right">
-      <!-- Theme toggle: system / dark / light -->
-      <!--div class="theme-toggle" role="group" aria-label="Color theme">
+      <div class="theme-toggle" role="group" aria-label="Color theme">
         <button class="theme-btn" data-theme="system" title="System theme" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="2" y="3" width="20" height="14" rx="2"/>
@@ -315,7 +342,7 @@ $api_base        = $config['site']['api_base'];
             <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
           </svg>
         </button>
-      </div-->
+      </div>
 
       <a
         href="<?= $e($config['site']['mtex_status']) ?>"
@@ -406,37 +433,60 @@ $api_base        = $config['site']['api_base'];
         <h2 class="group-title"><?= $e($group) ?></h2>
         <div class="service-list">
           <?php foreach ($group_services as $svc): ?>
+          <?php
+            $hist    = $svc['is_deployed'] ? ($svc_history[$svc['slug']] ?? []) : [];
+            $up_cnt  = count(array_filter($hist, fn($h) => $h['status'] === 'up'));
+            $uptime  = count($hist) > 0 ? round($up_cnt / count($hist) * 100, 1) : null;
+            $latencies = array_filter(array_column($hist, 'latency_ms'), fn($v) => $v !== null);
+            $avg_lat = count($latencies) ? (int) round(array_sum($latencies) / count($latencies)) : null;
+          ?>
           <div
             class="service-row<?= !$svc['is_deployed'] ? ' service-row--not-deployed' : '' ?>"
             data-slug="<?= $e($svc['slug']) ?>"
             data-status="<?= $e($svc['status']) ?>"
           >
-            <div class="service-row-left">
-              <span class="status-indicator status-indicator--<?= $e($svc['status']) ?>" aria-hidden="true"></span>
-              <a
-                href="<?= $e($svc['url']) ?>"
-                class="service-name"
-                target="_blank"
-                rel="noopener noreferrer"
-              ><?= $e($svc['name']) ?></a>
+            <div class="service-row-main">
+              <div class="service-row-left">
+                <span class="status-indicator status-indicator--<?= $e($svc['status']) ?>" aria-hidden="true"></span>
+                <a href="<?= $e($svc['url']) ?>" class="service-name" target="_blank" rel="noopener noreferrer"><?= $e($svc['name']) ?></a>
+              </div>
+              <div class="service-row-right">
+                <?php if ($svc['latency_ms'] !== null): ?>
+                <span class="service-latency"><?= (int) $svc['latency_ms'] ?>ms</span>
+                <?php endif; ?>
+                <span class="service-status-label service-status-label--<?= $e($svc['status']) ?>">
+                  <?= match($svc['status']) {
+                      'up'           => 'Operational',
+                      'degraded'     => 'Degraded',
+                      'down'         => 'Outage',
+                      'not_deployed' => 'Not Deployed',
+                      default        => 'Unknown',
+                  } ?>
+                </span>
+                <?php if ($svc['http_code'] !== null): ?>
+                <span class="service-code">HTTP <?= (int) $svc['http_code'] ?></span>
+                <?php endif; ?>
+              </div>
             </div>
-            <div class="service-row-right">
-              <?php if ($svc['latency_ms'] !== null): ?>
-              <span class="service-latency"><?= (int) $svc['latency_ms'] ?>ms</span>
-              <?php endif; ?>
-              <span class="service-status-label service-status-label--<?= $e($svc['status']) ?>">
-                <?= match($svc['status']) {
-                    'up'           => 'Operational',
-                    'degraded'     => 'Degraded',
-                    'down'         => 'Outage',
-                    'not_deployed' => 'Not Deployed',
-                    default        => 'Unknown',
-                } ?>
-              </span>
-              <?php if ($svc['http_code'] !== null): ?>
-              <span class="service-code">HTTP <?= (int) $svc['http_code'] ?></span>
-              <?php endif; ?>
+            <?php if ($svc['is_deployed'] && count($hist) > 0): ?>
+            <div class="service-history">
+              <div class="uptime-bar" aria-label="Uptime history">
+                <?php foreach ($hist as $h): ?>
+                <span class="uptime-tick uptime-tick--<?= $e($h['status']) ?>"
+                      title="<?= $e(date('Y-m-d H:i', $h['ts'])) ?> — <?= $e($h['status']) ?><?= $h['latency_ms'] !== null ? ' — ' . (int)$h['latency_ms'] . 'ms' : '' ?>"></span>
+                <?php endforeach; ?>
+              </div>
+              <div class="uptime-meta">
+                <?php if ($uptime !== null): ?>
+                <span class="uptime-pct"><?= $uptime ?>% uptime</span>
+                <?php endif; ?>
+                <?php if ($avg_lat !== null): ?>
+                <span class="uptime-avg">avg <?= $avg_lat ?>ms</span>
+                <?php endif; ?>
+                <span class="uptime-window"><?= count($hist) ?> checks</span>
+              </div>
             </div>
+            <?php endif; ?>
           </div>
           <?php endforeach; ?>
         </div>
@@ -447,7 +497,7 @@ $api_base        = $config['site']['api_base'];
 
   <div class="section-divider">
     <svg viewBox="0 0 1440 60" preserveAspectRatio="none" aria-hidden="true">
-      <path d="M0,0 Q360,60 720,30 Q1080,0 1440,60 L1440,60 L0,60 Z" fill="currentColor"/>
+      <path d="M0,0 Q360,60 720,30 Q1080,0 1440,60 L1440,60 L0,60 Z" class="divider-fill-alt"/>
     </svg>
   </div>
 
@@ -545,23 +595,19 @@ $api_base        = $config['site']['api_base'];
 
 <footer class="site-footer">
   <div class="container footer-inner">
-    <div class="footer-left">
+    <div class="footer-brand">
       <span class="footer-logo"><?= $e($config['site']['org']) ?></span>
       <span class="footer-copy">
         &copy; <?= date('Y') ?> <?= $e($config['site']['org']) ?>. All rights reserved.
       </span>
+      <span class="footer-version">v<?= $e($config['site']['version']) ?></span>
     </div>
     <div class="footer-right">
-      <a href="<?= $e($config['site']['mtex_status']) ?>" class="footer-link" target="_blank" rel="noopener noreferrer">
-        MTEX Status
-      </a>
-      <a href="<?= $e($config['site']['github_url']) ?>" class="footer-link" target="_blank" rel="noopener noreferrer">
-        GitHub
-      </a>
-      <a href="https://fabianternis.dev" class="footer-link" target="_blank" rel="noopener noreferrer">
-        Fabian Ternis
-      </a>
-      <!-- Theme toggle: system / dark / light -->
+      <nav class="footer-nav" aria-label="Footer navigation">
+        <a href="<?= $e($config['site']['mtex_status']) ?>" class="footer-link" target="_blank" rel="noopener noreferrer">MTEX Status</a>
+        <a href="<?= $e($config['site']['github_url']) ?>" class="footer-link" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="https://fabianternis.dev" class="footer-link" target="_blank" rel="noopener noreferrer">Fabian Ternis</a>
+      </nav>
       <div class="theme-toggle" role="group" aria-label="Color theme">
         <button class="theme-btn" data-theme="system" title="System theme" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -589,13 +635,12 @@ $api_base        = $config['site']['api_base'];
           </svg>
         </button>
       </div>
-      <span class="footer-version">v<?= $e($config['site']['version']) ?></span>
     </div>
   </div>
 </footer>
 
 <script
-  src="/script.js"
+  src="script.js"
   defer
   data-api-base="<?= $e($api_base) ?>"
   data-playground="<?= $e($playground_base) ?>"
