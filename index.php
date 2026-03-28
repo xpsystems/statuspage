@@ -595,23 +595,19 @@ $api_base        = $config['site']['api_base'];
 
 <footer class="site-footer">
   <div class="container footer-inner">
-    <div class="footer-brand footer-left">
+    <div class="footer-brand">
       <span class="footer-logo"><?= $e($config['site']['org']) ?></span>
       <span class="footer-copy">
         &copy; <?= date('Y') ?> <?= $e($config['site']['org']) ?>. All rights reserved.
       </span>
+      <span class="footer-version">v<?= $e($config['site']['version']) ?></span>
     </div>
     <div class="footer-right">
-      <a href="<?= $e($config['site']['mtex_status']) ?>" class="footer-link" target="_blank" rel="noopener noreferrer">
-        MTEX Status
-      </a>
-      <a href="<?= $e($config['site']['github_url']) ?>" class="footer-link" target="_blank" rel="noopener noreferrer">
-        GitHub
-      </a>
-      <a href="https://fabianternis.dev" class="footer-link" target="_blank" rel="noopener noreferrer">
-        Fabian Ternis
-      </a>
-      <!-- Theme toggle: system / dark / light -->
+      <nav class="footer-nav" aria-label="Footer navigation">
+        <a href="<?= $e($config['site']['mtex_status']) ?>" class="footer-link" target="_blank" rel="noopener noreferrer">MTEX Status</a>
+        <a href="<?= $e($config['site']['github_url']) ?>" class="footer-link" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="https://fabianternis.dev" class="footer-link" target="_blank" rel="noopener noreferrer">Fabian Ternis</a>
+      </nav>
       <div class="theme-toggle" role="group" aria-label="Color theme">
         <button class="theme-btn" data-theme="system" title="System theme" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -639,7 +635,6 @@ $api_base        = $config['site']['api_base'];
           </svg>
         </button>
       </div>
-      <span class="footer-version">v<?= $e($config['site']['version']) ?></span>
     </div>
   </div>
 </footer>

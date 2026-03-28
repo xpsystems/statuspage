@@ -435,28 +435,9 @@
     color: var(--text-muted);
 }
 
-/* ── Footer (statuspage has left/right layout, not brand/right) ─ */
-.footer-left {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    align-items: center;
-}
-
 /* ── Responsive ──────────────────────────────────────────────── */
 @media (min-width: 640px) {
     .api-grid { grid-template-columns: repeat(2, 1fr); }
-}
-
-@media (min-width: 900px) {
-    .footer-inner {
-        flex-direction: row;
-        justify-content: space-between;
-        text-align: left;
-    }
-
-    .footer-left { align-items: flex-start; }
-    .footer-right { justify-content: flex-end; }
 }
 
 @media (max-width: 560px) {
