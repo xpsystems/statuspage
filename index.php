@@ -562,13 +562,7 @@ $api_base        = $config['site']['api_base'];
               <div class="uptime-bar" aria-label="90-day uptime history">
                 <?php foreach ($days_hist as $d): ?>
                 <?php $ds = stats_day_status($d); ?>
-                <span class="uptime-tick uptime-tick--<?= $e($ds) ?>"
-                      data-date="<?= $e($d['date']) ?>"
-                      data-uptime="<?= $d['total_checks'] > 0 ? $d['uptime_pct'] : null ?>"
-                      data-latency="<?= $d['avg_latency_ms'] ?>"
-                      data-checks="<?= $d['total_checks'] ?>"
-                      data-down="<?= $d['down_checks'] ?>"
-                      data-degraded="<?= $d['degraded_checks'] ?>"></span>
+                <span class="uptime-tick uptime-tick--<?= $e($ds) ?>"></span>
                 <?php endforeach; ?>
               </div>
               <div class="uptime-meta">

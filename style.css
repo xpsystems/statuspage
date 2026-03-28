@@ -540,7 +540,6 @@ html.is-switching-theme *, html.is-switching-theme *::before, html.is-switching-
     align-items: flex-end;
     gap: 2px;
     height: 28px;
-    position: relative;
 }
 
 .uptime-tick {
@@ -548,72 +547,26 @@ html.is-switching-theme *, html.is-switching-theme *::before, html.is-switching-
     min-width: 3px;
     height: 100%;
     border-radius: 2px;
-    transition: opacity var(--transition), transform var(--transition);
+    transition: transform 0.12s ease, filter 0.12s ease;
     cursor: default;
     position: relative;
 }
 
 .uptime-tick:hover {
-    opacity: 0.85;
-    transform: scaleY(1.15);
+    transform: scaleY(1.18);
     transform-origin: bottom;
-    z-index: 10;
+    filter: brightness(1.2);
+    z-index: 2;
 }
 
 /* ── Downtime severity stages ────────────────────────────────── */
 .uptime-tick--up              { background-color: var(--green); }
 .uptime-tick--degraded        { background-color: var(--yellow); }
-.uptime-tick--outage-minor    { background-color: #f97316; }   /* orange  — <10% down  */
-.uptime-tick--outage-major    { background-color: #ef4444; }   /* red     — 10–50% down */
-.uptime-tick--outage-critical { background-color: #991b1b; }   /* dark red — >50% down */
+.uptime-tick--outage-minor    { background-color: #f97316; }
+.uptime-tick--outage-major    { background-color: #ef4444; }
+.uptime-tick--outage-critical { background-color: #991b1b; }
 .uptime-tick--unknown         { background-color: var(--border); }
 
-/* ── Tooltip ─────────────────────────────────────────────────── */
-.uptime-tick::after {
-    content: attr(data-tip);
-    position: absolute;
-    bottom: calc(100% + 8px);
-    left: 50%;
-    transform: translateX(-50%);
-    background: var(--card);
-    border: 1px solid var(--border-hover);
-    color: var(--text);
-    font-size: 0.6875rem;
-    font-family: var(--mono);
-    line-height: 1.5;
-    white-space: pre;
-    padding: 6px 9px;
-    border-radius: var(--radius-xs);
-    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.15s ease;
-    z-index: 100;
-    min-width: 130px;
-    text-align: left;
-}
-
-/* Arrow */
-.uptime-tick::before {
-    content: '';
-    position: absolute;
-    bottom: calc(100% + 2px);
-    left: 50%;
-    transform: translateX(-50%);
-    border: 5px solid transparent;
-    border-top-color: var(--border-hover);
-    pointer-events: none;
-    opacity: 0;
-    transition: opacity 0.15s ease;
-    z-index: 101;
-}
-
-.uptime-tick:hover::after,
-.uptime-tick:hover::before { opacity: 1; }
-
-/* Keep tooltip inside viewport on edge ticks */
-.uptime-bar .uptime-tick:first-child::after  { left: 0; transform: none; }
-.uptime-bar .uptime-tick:last-child::after   { left: auto; right: 0; transform: none; }
 
 .uptime-meta {
     display: flex;

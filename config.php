@@ -106,6 +106,30 @@ $config = [
             'ping_url'    => 'https://xpsys.de',
             'is_deployed' => true,
         ],
+        [
+            'slug'        => 'contact-xpsystems-eu',
+            'name'        => 'contact.xpsystems.eu',
+            'group'       => 'Core',
+            'url'         => 'https://contact.xpsystems.eu',
+            'ping_url'    => 'https://contact.xpsystems.eu',
+            'is_deployed' => true,
+        ],
+        [
+            'slug'        => 'domains-xpsystems-eu',
+            'name'        => 'domains.xpsystems.eu',
+            'group'       => 'Core',
+            'url'         => 'https://domains.xpsystems.eu',
+            'ping_url'    => 'https://domains.xpsystems.eu',
+            'is_deployed' => true,
+        ],
+        [
+            'slug'        => 'opensource-xpsystems-eu',
+            'name'        => 'opensource.xpsystems.eu',
+            'group'       => 'Core',
+            'url'         => 'https://opensource.xpsystems.eu',
+            'ping_url'    => 'https://opensource.xpsystems.eu',
+            'is_deployed' => true,
+        ],
 
         // ── Hosting ─────────────────────────────────────────────────────────
         [
