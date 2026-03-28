@@ -288,8 +288,7 @@ $api_base        = $config['site']['api_base'];
       <?= $e($config['site']['org']) ?>
     </a>
     <div class="nav-right">
-      <!-- Theme toggle: system / dark / light -->
-      <!--div class="theme-toggle" role="group" aria-label="Color theme">
+      <div class="theme-toggle" role="group" aria-label="Color theme">
         <button class="theme-btn" data-theme="system" title="System theme" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="2" y="3" width="20" height="14" rx="2"/>
@@ -315,7 +314,7 @@ $api_base        = $config['site']['api_base'];
             <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
           </svg>
         </button>
-      </div-->
+      </div>
 
       <a
         href="<?= $e($config['site']['mtex_status']) ?>"
@@ -545,7 +544,7 @@ $api_base        = $config['site']['api_base'];
 
 <footer class="site-footer">
   <div class="container footer-inner">
-    <div class="footer-left">
+    <div class="footer-brand footer-left">
       <span class="footer-logo"><?= $e($config['site']['org']) ?></span>
       <span class="footer-copy">
         &copy; <?= date('Y') ?> <?= $e($config['site']['org']) ?>. All rights reserved.
