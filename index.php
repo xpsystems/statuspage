@@ -561,8 +561,28 @@ $api_base        = $config['site']['api_base'];
             <div class="service-history">
               <div class="uptime-bar" aria-label="90-day uptime history">
                 <?php foreach ($days_hist as $d): ?>
-                <?php $ds = stats_day_status($d); ?>
-                <span class="uptime-tick uptime-tick--<?= $e($ds) ?>"></span>
+                <?php
+                  $ds        = stats_day_status($d);
+                  $day_label = isset($d['date']) ? $d['date'] : (isset($d['ts']) ? date('Y-m-d', (int)$d['ts']) : '');
+                  $status_labels = [
+                    'up'              => 'Operational',
+                    'degraded'        => 'Degraded',
+                    'outage-minor'    => 'Minor Outage',
+                    'outage-major'    => 'Major Outage',
+                    'outage-critical' => 'Critical Outage',
+                    'unknown'         => 'No data',
+                  ];
+                  $tip_status = $status_labels[$ds] ?? ucfirst($ds);
+                  $tip_lat    = isset($d['avg_latency_ms']) && $d['avg_latency_ms'] !== null ? (int)$d['avg_latency_ms'] . 'ms avg' : null;
+                  $tip_uptime = isset($d['uptime_pct']) && $d['uptime_pct'] !== null ? $d['uptime_pct'] . '% up' : null;
+                  $tip_meta   = implode(' · ', array_filter([$tip_uptime, $tip_lat]));
+                ?>
+                <span class="uptime-tick uptime-tick--<?= $e($ds) ?>"
+                  data-tip-date="<?= $e($day_label) ?>"
+                  data-tip-status="<?= $e($tip_status) ?>"
+                  data-tip-status-cls="<?= $e($ds) ?>"
+                  data-tip-meta="<?= $e($tip_meta) ?>"
+                ></span>
                 <?php endforeach; ?>
               </div>
               <div class="uptime-meta">
@@ -745,6 +765,62 @@ $cache_age = file_exists($config['cache']['path'])
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(function(){});
 }
+</script>
+<div id="day-tooltip" class="day-tooltip" aria-hidden="true">
+  <span class="day-tooltip-date" id="day-tooltip-date"></span>
+  <span class="day-tooltip-status" id="day-tooltip-status"></span>
+  <span class="day-tooltip-meta" id="day-tooltip-meta"></span>
+</div>
+<script>
+(function () {
+  var tip     = document.getElementById('day-tooltip');
+  var tipDate = document.getElementById('day-tooltip-date');
+  var tipStat = document.getElementById('day-tooltip-status');
+  var tipMeta = document.getElementById('day-tooltip-meta');
+  var STATUS_CLS = ['up','degraded','outage-minor','outage-major','outage-critical','unknown'];
+
+  document.querySelectorAll('.uptime-tick[data-tip-status]').forEach(function (tick) {
+    tick.addEventListener('mouseenter', function (e) {
+      var date   = tick.dataset.tipDate   || '';
+      var status = tick.dataset.tipStatus || '';
+      var cls    = tick.dataset.tipStatusCls || '';
+      var meta   = tick.dataset.tipMeta   || '';
+
+      tipDate.textContent = date;
+      tipDate.style.display = date ? '' : 'none';
+
+      tipStat.textContent = status;
+      STATUS_CLS.forEach(function (c) { tipStat.classList.remove('day-tooltip-status--' + c); });
+      if (cls) tipStat.classList.add('day-tooltip-status--' + cls);
+
+      tipMeta.textContent = meta;
+      tipMeta.style.display = meta ? '' : 'none';
+
+      tip.classList.add('day-tooltip--visible');
+      position(e);
+    });
+
+    tick.addEventListener('mousemove', position);
+
+    tick.addEventListener('mouseleave', function () {
+      tip.classList.remove('day-tooltip--visible');
+    });
+  });
+
+  function position(e) {
+    var tw = tip.offsetWidth;
+    var th = tip.offsetHeight;
+    var x  = e.clientX - tw / 2;
+    var y  = e.clientY - th - 14;
+
+    // keep within viewport
+    x = Math.max(8, Math.min(x, window.innerWidth - tw - 8));
+    if (y < 8) y = e.clientY + 18;
+
+    tip.style.left = x + 'px';
+    tip.style.top  = y + 'px';
+  }
+})();
 </script>
 </body>
 </html>
