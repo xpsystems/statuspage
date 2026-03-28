@@ -11,7 +11,7 @@ $config = [
         'mtex_status' => 'https://status.mtex.dev',
         'api_base'    => 'https://status.xpsystems.eu',
         'playground'  => 'https://api-sandbox.de/playground.html',
-        'version'     => '1.4.0',
+        'version'     => '1.5.0',
     ],
     'cache' => [
         'ttl'  => 90,
@@ -19,12 +19,34 @@ $config = [
         'dir'  => __DIR__ . '/cache',
     ],
     'history' => [
-        'path'     => __DIR__ . '/cache/history.json',
+        'path'        => __DIR__ . '/cache/history.json',
         'max_entries' => 1440, // ~24h at 1-min intervals; trims oldest beyond this
+    ],
+    // ── Database (optional — set driver to 'none' to use JSON files only) ───
+    // driver: 'sqlite' | 'mysql' | 'none'
+    'db' => [
+        'driver' => 'sqlite',           // ← change to 'mysql' or 'none'
+
+        // SQLite — file path (relative to this file)
+        'sqlite_path' => __DIR__ . '/cache/status.db',
+
+        // MySQL — fill in when driver = 'mysql'
+        'mysql_host'     => '127.0.0.1',
+        'mysql_port'     => 3306,
+        'mysql_dbname'   => 'xpsystems_status',
+        'mysql_user'     => 'db_user',
+        'mysql_password' => 'db_password',
+
+        // How many days of history to keep (pruned on each check run)
+        'keep_days' => 30,
     ],
     'ping' => [
         'timeout'   => 6,
         'useragent' => 'xpsystems-statusbot/1.0 (+https://status.xpsystems.eu)',
+    ],
+    // ── check.php HTTP token (leave '' to disable, set a secret for cron-via-URL)
+    'check' => [
+        'token' => '',   // e.g. 'my-secret-cron-token'
     ],
     'api_endpoints' => [
         [

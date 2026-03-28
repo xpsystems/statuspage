@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/database.php';
 
 $e   = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 $uri = strtok($_SERVER['REQUEST_URI'] ?? '/', '?');
@@ -8,10 +9,6 @@ $uri = '/' . trim($uri, '/');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/**
- * Returns only services that are marked as deployed (is_deployed === true).
- * Services without the key, or with is_deployed set to false, are excluded.
- */
 function deployed_services(array $config): array
 {
     return array_values(
@@ -19,6 +16,9 @@ function deployed_services(array $config): array
     );
 }
 
+/**
+ * Returns current status from cache, running check.php if cache is stale.
+ */
 function get_cached_status(array $config): array
 {
     $cache_file = $config['cache']['path'];
@@ -38,124 +38,31 @@ function get_cached_status(array $config): array
         }
     }
 
-    return refresh_status($config);
+    // Cache stale or missing — run check.php inline
+    require __DIR__ . '/check.php';
+    return $payload; // check.php sets $payload
 }
 
-function refresh_status(array $config): array
-{
-    $results = [];
-    $timeout = $config['ping']['timeout'];
-    $ua      = $config['ping']['useragent'];
-
-    // Only ping services that are deployed.
-    foreach (deployed_services($config) as $service) {
-        $results[$service['slug']] = ping_url(
-            $service['ping_url'],
-            $timeout,
-            $ua
-        );
-    }
-
-    $payload = [
-        'checked_at' => time(),
-        'services'   => $results,
-    ];
-
-    file_put_contents(
-        $config['cache']['path'],
-        json_encode($payload, JSON_PRETTY_PRINT)
-    );
-
-    // Append to history log
-    append_history($config, $payload);
-
-    return $payload;
-}
-
-function ping_url(string $url, int $timeout, string $ua): array
-{
-    $start = microtime(true);
-
-    if (!function_exists('curl_init')) {
-        return ['status' => 'unknown', 'code' => null, 'latency_ms' => null];
-    }
-
-    $ch = curl_init();
-    curl_setopt_array($ch, [
-        CURLOPT_URL            => $url,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT        => $timeout,
-        CURLOPT_CONNECTTIMEOUT => $timeout,
-        CURLOPT_USERAGENT      => $ua,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_MAXREDIRS      => 3,
-        CURLOPT_NOBODY         => true,
-        CURLOPT_SSL_VERIFYPEER => true,
-        CURLOPT_SSL_VERIFYHOST => 2,
-        CURLOPT_HEADER         => false,
-    ]);
-
-    curl_exec($ch);
-    $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $err  = curl_errno($ch);
-
-    $latency = (int) round((microtime(true) - $start) * 1000);
-
-    if ($err !== 0 || $code === 0) {
-        return ['status' => 'down', 'code' => null, 'latency_ms' => $latency];
-    }
-
-    if ($code >= 500) {
-        return ['status' => 'degraded', 'code' => $code, 'latency_ms' => $latency];
-    }
-
-    return ['status' => 'up', 'code' => $code, 'latency_ms' => $latency];
-}
-
-// ── History ───────────────────────────────────────────────────────────────────
-
-function append_history(array $config, array $payload): void
-{
-    $path     = $config['history']['path'];
-    $max      = $config['history']['max_entries'];
-    $existing = [];
-
-    if (file_exists($path)) {
-        $raw = json_decode((string) file_get_contents($path), true);
-        if (is_array($raw)) {
-            $existing = $raw;
-        }
-    }
-
-    $entry = [
-        'ts'       => $payload['checked_at'],
-        'services' => $payload['services'], // slug => {status, code, latency_ms}
-    ];
-
-    $existing[] = $entry;
-
-    // Trim to max_entries (keep newest)
-    if (count($existing) > $max) {
-        $existing = array_slice($existing, -$max);
-    }
-
-    file_put_contents($path, json_encode($existing, JSON_PRETTY_PRINT));
-}
+// ── History helpers (DB-aware) ────────────────────────────────────────────────
 
 function load_history(array $config): array
 {
-    $path = $config['history']['path'];
-    if (!file_exists($path)) {
-        return [];
+    $driver = $config['db']['driver'] ?? 'none';
+    if ($driver !== 'none') {
+        try {
+            $pdo = db_connect($config);
+            return db_history_full($pdo, 1440);
+        } catch (\Throwable $e) {
+            error_log('[xps-index] DB error: ' . $e->getMessage());
+        }
     }
+    // JSON fallback
+    $path = $config['history']['path'];
+    if (!file_exists($path)) return [];
     $raw = json_decode((string) file_get_contents($path), true);
     return is_array($raw) ? $raw : [];
 }
 
-/**
- * Returns the last N history entries for a given slug,
- * formatted as [{ts, status, latency_ms, http_code}].
- */
 function history_for_slug(array $history, string $slug, int $limit = 90): array
 {
     $out = [];
@@ -163,14 +70,27 @@ function history_for_slug(array $history, string $slug, int $limit = 90): array
         $svc = $entry['services'][$slug] ?? null;
         if ($svc === null) continue;
         $out[] = [
-            'ts'         => $entry['ts'],
+            'ts'         => (int) $entry['ts'],
             'status'     => $svc['status']     ?? 'unknown',
             'latency_ms' => $svc['latency_ms'] ?? null,
-            'http_code'  => $svc['code']        ?? null,
+            'http_code'  => $svc['http_code']  ?? $svc['code'] ?? null,
         ];
     }
-    // Return last $limit entries
     return array_slice($out, -$limit);
+}
+
+function history_for_slug_db(array $config, string $slug, int $limit = 90): array
+{
+    $driver = $config['db']['driver'] ?? 'none';
+    if ($driver !== 'none') {
+        try {
+            $pdo = db_connect($config);
+            return db_history_for_slug($pdo, $slug, $limit);
+        } catch (\Throwable $e) {
+            error_log('[xps-index] DB error: ' . $e->getMessage());
+        }
+    }
+    return history_for_slug(load_history($config), $slug, $limit);
 }
 
 function build_full_status(array $config): array
@@ -179,10 +99,9 @@ function build_full_status(array $config): array
     $raw        = $cached['services'] ?? [];
     $checked_at = $cached['checked_at'] ?? time();
 
-    $services      = [];
-    $not_deployed  = [];
+    $services     = [];
+    $not_deployed = [];
 
-    // Deployed services — carry ping results and participate in overall status.
     foreach (deployed_services($config) as $svc) {
         $result     = $raw[$svc['slug']] ?? ['status' => 'unknown', 'code' => null, 'latency_ms' => null];
         $services[] = [
@@ -192,16 +111,13 @@ function build_full_status(array $config): array
             'url'         => $svc['url'],
             'is_deployed' => true,
             'status'      => $result['status'],
-            'http_code'   => $result['code'],
+            'http_code'   => $result['code'] ?? null,
             'latency_ms'  => $result['latency_ms'],
         ];
     }
 
-    // Non-deployed services — shown in the UI as "Not deployed"; never affect overall status.
     foreach ($config['services'] as $svc) {
-        if (!empty($svc['is_deployed'])) {
-            continue;
-        }
+        if (!empty($svc['is_deployed'])) continue;
         $not_deployed[] = [
             'slug'        => $svc['slug'],
             'name'        => $svc['name'],
@@ -214,23 +130,20 @@ function build_full_status(array $config): array
         ];
     }
 
-    // Overall status is derived only from deployed services.
     $statuses       = array_column($services, 'status');
     $down_count     = count(array_filter($statuses, fn($s) => $s === 'down'));
     $degraded_count = count(array_filter($statuses, fn($s) => $s === 'degraded'));
 
-    if ($down_count > 0) {
-        $overall = 'major_outage';
-    } elseif ($degraded_count > 0) {
-        $overall = 'partial_outage';
-    } else {
-        $overall = 'operational';
-    }
+    $overall = match(true) {
+        $down_count > 0     => 'major_outage',
+        $degraded_count > 0 => 'partial_outage',
+        default             => 'operational',
+    };
 
     return [
         'overall'    => $overall,
         'checked_at' => $checked_at,
-        'services'   => array_merge($services, $not_deployed),
+        'services'   => [...$services, ...$not_deployed],
     ];
 }
 
@@ -303,21 +216,29 @@ if (str_starts_with($uri, '/api')) {
     }
 
     if ($uri === '/api/history') {
-        $history = load_history($config);
-        $limit   = min((int) ($_GET['limit'] ?? 90), 1440);
-        $out     = array_slice($history, -$limit);
-        echo json_encode([
-            'count'   => count($out),
-            'entries' => $out,
-        ], JSON_PRETTY_PRINT);
+        $limit = min((int) ($_GET['limit'] ?? 90), 1440);
+        $driver = $config['db']['driver'] ?? 'none';
+        if ($driver !== 'none') {
+            try {
+                $pdo = db_connect($config);
+                $out = db_history_full($pdo, $limit);
+            } catch (\Throwable $ex) {
+                error_log('[xps-api] DB error: ' . $ex->getMessage());
+                $history = load_history($config);
+                $out     = array_slice($history, -$limit);
+            }
+        } else {
+            $history = load_history($config);
+            $out     = array_slice($history, -$limit);
+        }
+        echo json_encode(['count' => count($out), 'entries' => $out], JSON_PRETTY_PRINT);
         exit;
     }
 
     if (preg_match('#^/api/history/([a-z0-9\-]+)$#', $uri, $m)) {
-        $slug    = $m[1];
-        $history = load_history($config);
-        $limit   = min((int) ($_GET['limit'] ?? 90), 1440);
-        $entries = history_for_slug($history, $slug, $limit);
+        $slug  = $m[1];
+        $limit = min((int) ($_GET['limit'] ?? 90), 1440);
+        $entries = history_for_slug_db($config, $slug, $limit);
         if (empty($entries)) {
             http_response_code(404);
             echo json_encode(['error' => 'No history found for slug', 'slug' => $slug], JSON_PRETTY_PRINT);
@@ -366,10 +287,9 @@ foreach ($config['groups'] as $group) {
 }
 
 // Load history for sparklines (last 60 checks per deployed service)
-$history     = load_history($config);
 $svc_history = [];
 foreach (deployed_services($config) as $svc) {
-    $svc_history[$svc['slug']] = history_for_slug($history, $svc['slug'], 60);
+    $svc_history[$svc['slug']] = history_for_slug_db($config, $svc['slug'], 60);
 }
 
 $playground_base = $config['site']['playground'];
