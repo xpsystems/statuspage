@@ -279,6 +279,32 @@
     }
   }
 
+  // ── Uptime bar tooltips ────────────────────────────────────────────────────
+
+  document.querySelectorAll(".uptime-tick").forEach(tick => {
+    const date    = tick.dataset.date;
+    const checks  = parseInt(tick.dataset.checks  || "0", 10);
+    const uptime  = tick.dataset.uptime;
+    const latency = tick.dataset.latency;
+    const down    = parseInt(tick.dataset.down     || "0", 10);
+    const deg     = parseInt(tick.dataset.degraded || "0", 10);
+
+    if (!date) return;
+
+    let tip = date;
+    if (checks === 0) {
+      tip += "\nno data";
+    } else {
+      tip += uptime !== "null" && uptime !== "" ? `\n${uptime}% uptime` : "";
+      if (down > 0)    tip += `\n${down} outage check${down > 1 ? "s" : ""}`;
+      if (deg > 0)     tip += `\n${deg} degraded`;
+      if (latency && latency !== "null") tip += `\navg ${latency}ms`;
+      tip += `\n${checks} checks`;
+    }
+
+    tick.dataset.tip = tip;
+  });
+
   // ── Start ──────────────────────────────────────────────────────────────────
 
   connectSSE();

@@ -563,7 +563,12 @@ $api_base        = $config['site']['api_base'];
                 <?php foreach ($days_hist as $d): ?>
                 <?php $ds = stats_day_status($d); ?>
                 <span class="uptime-tick uptime-tick--<?= $e($ds) ?>"
-                      title="<?= $e($d['date']) ?><?= $d['total_checks'] > 0 ? ' — ' . $d['uptime_pct'] . '% up (' . $d['total_checks'] . ' checks)' : ' — no data' ?>"></span>
+                      data-date="<?= $e($d['date']) ?>"
+                      data-uptime="<?= $d['total_checks'] > 0 ? $d['uptime_pct'] : null ?>"
+                      data-latency="<?= $d['avg_latency_ms'] ?>"
+                      data-checks="<?= $d['total_checks'] ?>"
+                      data-down="<?= $d['down_checks'] ?>"
+                      data-degraded="<?= $d['degraded_checks'] ?>"></span>
                 <?php endforeach; ?>
               </div>
               <div class="uptime-meta">

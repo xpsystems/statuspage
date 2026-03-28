@@ -123,13 +123,26 @@ function stats_summary(array $rows): array
 
 /**
  * Classify a day entry (from stats_days) into a CSS status class.
- * Used for coloring the 90-day uptime bar.
+ * Supports multiple downtime severity stages.
+ *
+ * Stages:
+ *   unknown        — no data for this day
+ *   up             — 100% operational
+ *   degraded       — degraded checks, no outage
+ *   outage-minor   — >0% and ≤10% of checks were down
+ *   outage-major   — >10% and ≤50% of checks were down
+ *   outage-critical — >50% of checks were down
  */
 function stats_day_status(array $day): string
 {
-    if ($day['total_checks'] === 0)  return 'unknown';
-    if ($day['had_outage'])          return 'down';
-    if ($day['had_degraded'])        return 'degraded';
+    if ($day['total_checks'] === 0) return 'unknown';
+
+    $outage_pct = $day['outage_pct'] ?? 0;
+
+    if ($outage_pct > 50)  return 'outage-critical';
+    if ($outage_pct > 10)  return 'outage-major';
+    if ($outage_pct > 0)   return 'outage-minor';
+    if ($day['had_degraded']) return 'degraded';
     return 'up';
 }
 
