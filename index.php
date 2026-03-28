@@ -333,6 +333,48 @@ if (str_starts_with($uri, '/api')) {
         exit;
     }
 
+    // /api/day/{slug}/{date}  — all checks for a slug on a specific UTC date
+    if (preg_match('#^/api/day/([a-z0-9\-]+)/(\d{4}-\d{2}-\d{2})$#', $uri, $m)) {
+        $slug = $m[1];
+        $date = $m[2];
+        $driver = $config['db']['driver'] ?? 'none';
+        if ($driver === 'none') {
+            http_response_code(501);
+            echo json_encode(['error' => 'Day detail requires a database driver (sqlite or mysql)'], JSON_PRETTY_PRINT);
+            exit;
+        }
+        try {
+            $pdo  = db_connect($config);
+            $rows = db_day_detail_for_slug($pdo, $slug, $date);
+        } catch (\Throwable $ex) {
+            http_response_code(500);
+            echo json_encode(['error' => $ex->getMessage()], JSON_PRETTY_PRINT);
+            exit;
+        }
+        if (empty($rows)) {
+            http_response_code(404);
+            echo json_encode(['error' => 'No data for this slug/date', 'slug' => $slug, 'date' => $date], JSON_PRETTY_PRINT);
+            exit;
+        }
+        $dt = db_calc_downtime($rows);
+        echo json_encode([
+            'slug'          => $slug,
+            'date'          => $date,
+            'total_checks'  => count($rows),
+            'down_secs'     => $dt['down_secs'],
+            'degraded_secs' => $dt['degraded_secs'],
+            'spans'         => $dt['spans'],
+            'checks'        => array_map(fn($r) => [
+                'ts'         => (int)$r['ts'],
+                'time'       => gmdate('H:i:s', (int)$r['ts']),
+                'status'     => $r['status'],
+                'latency_ms' => $r['latency_ms'],
+                'http_code'  => $r['http_code'],
+            ], $rows),
+        ], JSON_PRETTY_PRINT);
+        exit;
+    }
+
     http_response_code(404);
     echo json_encode([
         'error'     => 'Unknown API endpoint',
@@ -574,13 +616,11 @@ $api_base        = $config['site']['api_base'];
                   ];
                   $tip_status    = $status_labels[$ds] ?? ucfirst($ds);
                   $total_checks  = (int)($d['total_checks'] ?? 0);
-                  $down_checks   = (int)($d['down_checks']  ?? 0);
-                  $deg_checks    = (int)($d['degraded_checks'] ?? 0);
                   $avg_lat       = isset($d['avg_latency_ms']) && $d['avg_latency_ms'] !== null ? (int)$d['avg_latency_ms'] : null;
                   $uptime_pct    = isset($d['uptime_pct'])    && $d['uptime_pct']    !== null ? (float)$d['uptime_pct']    : null;
-                  // Estimate downtime: each check ≈ 1 min interval
-                  $down_mins     = $down_checks;
-                  $deg_mins      = $deg_checks;
+                  // Real downtime from actual timestamps
+                  $down_secs     = (int)($d['down_secs']     ?? 0);
+                  $degraded_secs = (int)($d['degraded_secs'] ?? 0);
                 ?>
                 <span class="uptime-tick uptime-tick--<?= $e($ds) ?>"
                   data-tip-date="<?= $e($day_label) ?>"
@@ -588,9 +628,11 @@ $api_base        = $config['site']['api_base'];
                   data-tip-status-cls="<?= $e($ds) ?>"
                   data-tip-uptime="<?= $uptime_pct !== null ? $uptime_pct : '' ?>"
                   data-tip-lat="<?= $avg_lat !== null ? $avg_lat : '' ?>"
-                  data-tip-down-mins="<?= $down_mins ?>"
-                  data-tip-deg-mins="<?= $deg_mins ?>"
+                  data-tip-down-secs="<?= $down_secs ?>"
+                  data-tip-deg-secs="<?= $degraded_secs ?>"
                   data-tip-total="<?= $total_checks ?>"
+                  data-slug="<?= $e($svc['slug']) ?>"
+                  data-date="<?= $e($day_label) ?>"
                 ></span>
                 <?php endforeach; ?>
               </div>
@@ -782,26 +824,51 @@ if ('serviceWorker' in navigator) {
   </div>
   <div class="day-tooltip-rows" id="day-tooltip-rows"></div>
 </div>
+
+<!-- Day detail drawer -->
+<div id="day-drawer-backdrop" class="day-drawer-backdrop"></div>
+<aside id="day-drawer" class="day-drawer" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="day-drawer-title">
+  <div class="day-drawer-header">
+    <div class="day-drawer-title-group">
+      <span class="day-drawer-label" id="day-drawer-svc"></span>
+      <h2 class="day-drawer-title" id="day-drawer-title"></h2>
+    </div>
+    <button class="day-drawer-close" id="day-drawer-close" aria-label="Close" type="button">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="day-drawer-body" id="day-drawer-body">
+    <div class="day-drawer-loading" id="day-drawer-loading">
+      <span class="day-drawer-spinner"></span>
+      Loading…
+    </div>
+    <div id="day-drawer-content" style="display:none"></div>
+    <div id="day-drawer-error" class="day-drawer-error" style="display:none"></div>
+  </div>
+</aside>
 <script>
 (function () {
+  // ── Tooltip ──────────────────────────────────────────────────
   var tip      = document.getElementById('day-tooltip');
   var tipDate  = document.getElementById('day-tooltip-date');
   var tipBadge = document.getElementById('day-tooltip-badge');
   var tipRows  = document.getElementById('day-tooltip-rows');
-
   var STATUS_CLS = ['up','degraded','outage-minor','outage-major','outage-critical','unknown'];
 
-  function fmtMins(m) {
-    m = parseInt(m, 10);
-    if (!m || m <= 0) return null;
-    var h = Math.floor(m / 60);
-    var min = m % 60;
-    if (h > 0 && min > 0) return h + 'h ' + min + 'm';
+  function fmtSecs(s) {
+    s = parseInt(s, 10);
+    if (!s || s <= 0) return null;
+    var h = Math.floor(s / 3600);
+    var m = Math.floor((s % 3600) / 60);
+    var sec = s % 60;
+    if (h > 0 && m > 0) return h + 'h ' + m + 'm';
     if (h > 0) return h + 'h';
-    return min + 'm';
+    if (m > 0 && sec > 0) return m + 'm ' + sec + 's';
+    if (m > 0) return m + 'm';
+    return sec + 's';
   }
 
-  function row(label, value) {
+  function tipRow(label, value) {
     var el = document.createElement('div');
     el.className = 'day-tooltip-row';
     el.innerHTML = '<span class="day-tooltip-row-label">' + label + '</span>'
@@ -809,62 +876,183 @@ if ('serviceWorker' in navigator) {
     return el;
   }
 
+  function positionTip(e) {
+    var tw = tip.offsetWidth, th = tip.offsetHeight;
+    var x = e.clientX - tw / 2;
+    var y = e.clientY - th - 14;
+    x = Math.max(8, Math.min(x, window.innerWidth - tw - 8));
+    if (y < 8) y = e.clientY + 18;
+    tip.style.left = x + 'px';
+    tip.style.top  = y + 'px';
+  }
+
   document.querySelectorAll('.uptime-tick[data-tip-status]').forEach(function (tick) {
     tick.addEventListener('mouseenter', function (e) {
-      var date      = tick.dataset.tipDate       || '';
-      var status    = tick.dataset.tipStatus     || '';
-      var cls       = tick.dataset.tipStatusCls  || '';
-      var uptime    = tick.dataset.tipUptime     || '';
-      var lat       = tick.dataset.tipLat        || '';
-      var downMins  = tick.dataset.tipDownMins   || '0';
-      var degMins   = tick.dataset.tipDegMins    || '0';
-      var total     = tick.dataset.tipTotal      || '0';
+      var date     = tick.dataset.tipDate      || '';
+      var status   = tick.dataset.tipStatus    || '';
+      var cls      = tick.dataset.tipStatusCls || '';
+      var uptime   = tick.dataset.tipUptime    || '';
+      var lat      = tick.dataset.tipLat       || '';
+      var downSecs = tick.dataset.tipDownSecs  || '0';
+      var degSecs  = tick.dataset.tipDegSecs   || '0';
+      var total    = tick.dataset.tipTotal     || '0';
 
-      // Header
       tipDate.textContent = date;
       STATUS_CLS.forEach(function (c) { tipBadge.classList.remove('day-tooltip-badge--' + c); });
       tipBadge.textContent = status;
       if (cls) tipBadge.classList.add('day-tooltip-badge--' + cls);
 
-      // Rows
       tipRows.innerHTML = '';
-
-      if (uptime !== '') {
-        tipRows.appendChild(row('Uptime', parseFloat(uptime).toFixed(2) + '%'));
-      }
-
-      var downFmt = fmtMins(downMins);
-      if (downFmt) tipRows.appendChild(row('Downtime', downFmt));
-
-      var degFmt = fmtMins(degMins);
-      if (degFmt) tipRows.appendChild(row('Degraded', degFmt));
-
-      if (lat !== '') tipRows.appendChild(row('Avg latency', lat + ' ms'));
-
-      if (parseInt(total, 10) > 0) {
-        tipRows.appendChild(row('Checks', total));
-      }
+      if (uptime !== '') tipRows.appendChild(tipRow('Uptime', parseFloat(uptime).toFixed(2) + '%'));
+      var df = fmtSecs(downSecs); if (df) tipRows.appendChild(tipRow('Downtime', df));
+      var dg = fmtSecs(degSecs);  if (dg) tipRows.appendChild(tipRow('Degraded', dg));
+      if (lat !== '') tipRows.appendChild(tipRow('Avg latency', lat + ' ms'));
+      if (parseInt(total, 10) > 0) tipRows.appendChild(tipRow('Checks', total));
 
       tip.classList.add('day-tooltip--visible');
-      position(e);
+      positionTip(e);
     });
+    tick.addEventListener('mousemove', positionTip);
+    tick.addEventListener('mouseleave', function () { tip.classList.remove('day-tooltip--visible'); });
 
-    tick.addEventListener('mousemove', position);
-    tick.addEventListener('mouseleave', function () {
+    // ── Click → open drawer ──────────────────────────────────
+    tick.addEventListener('click', function () {
+      var slug = tick.dataset.slug;
+      var date = tick.dataset.date;
+      if (!slug || !date) return;
       tip.classList.remove('day-tooltip--visible');
+      openDrawer(slug, date, tick);
     });
   });
 
-  function position(e) {
-    var tw = tip.offsetWidth;
-    var th = tip.offsetHeight;
-    var x  = e.clientX - tw / 2;
-    var y  = e.clientY - th - 14;
-    x = Math.max(8, Math.min(x, window.innerWidth  - tw - 8));
-    if (y < 8) y = e.clientY + 18;
-    tip.style.left = x + 'px';
-    tip.style.top  = y + 'px';
+  // ── Drawer ───────────────────────────────────────────────────
+  var drawer   = document.getElementById('day-drawer');
+  var backdrop = document.getElementById('day-drawer-backdrop');
+  var drawerSvc    = document.getElementById('day-drawer-svc');
+  var drawerTitle  = document.getElementById('day-drawer-title');
+  var drawerLoad   = document.getElementById('day-drawer-loading');
+  var drawerCont   = document.getElementById('day-drawer-content');
+  var drawerErr    = document.getElementById('day-drawer-error');
+  var closeBtn     = document.getElementById('day-drawer-close');
+
+  function openDrawer(slug, date, tick) {
+    // Resolve service name from the parent service-row
+    var row = tick.closest('.service-row');
+    var svcName = row ? (row.querySelector('.service-name') || {}).textContent || slug : slug;
+
+    drawerSvc.textContent   = svcName;
+    drawerTitle.textContent = date;
+    drawerLoad.style.display  = '';
+    drawerCont.style.display  = 'none';
+    drawerErr.style.display   = 'none';
+    drawerCont.innerHTML      = '';
+
+    drawer.classList.add('day-drawer--open');
+    backdrop.classList.add('day-drawer-backdrop--visible');
+    drawer.setAttribute('aria-hidden', 'false');
+    document.body.style.overflow = 'hidden';
+
+    var apiBase = (document.querySelector('script[data-api-base]') || {}).dataset.apiBase || '';
+    fetch(apiBase + '/api/day/' + encodeURIComponent(slug) + '/' + encodeURIComponent(date), { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : r.json().then(function (e) { throw new Error(e.error || 'Error ' + r.status); }); })
+      .then(function (data) { renderDrawer(data, svcName); })
+      .catch(function (err) {
+        drawerLoad.style.display = 'none';
+        drawerErr.style.display  = '';
+        drawerErr.textContent    = err.message || 'Failed to load data.';
+      });
   }
+
+  function closeDrawer() {
+    drawer.classList.remove('day-drawer--open');
+    backdrop.classList.remove('day-drawer-backdrop--visible');
+    drawer.setAttribute('aria-hidden', 'true');
+    document.body.style.overflow = '';
+  }
+
+  closeBtn.addEventListener('click', closeDrawer);
+  backdrop.addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeDrawer(); });
+
+  function fmtTime(ts) {
+    var d = new Date(ts * 1000);
+    return d.getUTCHours().toString().padStart(2,'0') + ':'
+         + d.getUTCMinutes().toString().padStart(2,'0') + ':'
+         + d.getUTCSeconds().toString().padStart(2,'0') + ' UTC';
+  }
+
+  function fmtDur(secs) {
+    if (!secs || secs <= 0) return '—';
+    var h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+    if (h > 0 && m > 0) return h + 'h ' + m + 'm';
+    if (h > 0) return h + 'h';
+    if (m > 0 && s > 0) return m + 'm ' + s + 's';
+    if (m > 0) return m + 'm';
+    return s + 's';
+  }
+
+  var STATUS_LABEL = { up: 'Operational', degraded: 'Degraded', down: 'Outage', unknown: 'Unknown' };
+
+  function renderDrawer(data, svcName) {
+    drawerLoad.style.display = 'none';
+    drawerCont.style.display = '';
+
+    var html = '';
+
+    // ── Summary cards ──
+    html += '<div class="ddr-summary">';
+    html += ddrCard('Total checks', data.total_checks);
+    if (data.down_secs > 0)     html += ddrCard('Downtime',  fmtDur(data.down_secs),     'down');
+    if (data.degraded_secs > 0) html += ddrCard('Degraded',  fmtDur(data.degraded_secs), 'degraded');
+    html += '</div>';
+
+    // ── Outage spans ──
+    var badSpans = (data.spans || []).filter(function (s) { return s.status === 'down' || s.status === 'degraded'; });
+    if (badSpans.length > 0) {
+      html += '<div class="ddr-section-title">Incidents</div>';
+      html += '<div class="ddr-incidents">';
+      badSpans.forEach(function (sp) {
+        html += '<div class="ddr-incident ddr-incident--' + sp.status + '">'
+              + '<div class="ddr-incident-bar"></div>'
+              + '<div class="ddr-incident-info">'
+              + '<span class="ddr-incident-status">' + (STATUS_LABEL[sp.status] || sp.status) + '</span>'
+              + '<span class="ddr-incident-time">' + fmtTime(sp.from) + ' → ' + fmtTime(sp.to) + '</span>'
+              + '</div>'
+              + '<span class="ddr-incident-dur">' + fmtDur(sp.secs) + '</span>'
+              + '</div>';
+      });
+      html += '</div>';
+    }
+
+    // ── Timeline ──
+    html += '<div class="ddr-section-title">Timeline <span class="ddr-check-count">' + data.total_checks + ' checks</span></div>';
+    html += '<div class="ddr-timeline">';
+
+    var checks = data.checks || [];
+    var prevStatus = null;
+    checks.forEach(function (c) {
+      var changed = c.status !== prevStatus;
+      prevStatus = c.status;
+      html += '<div class="ddr-check ddr-check--' + c.status + (changed ? ' ddr-check--changed' : '') + '">'
+            + '<span class="ddr-check-dot"></span>'
+            + '<span class="ddr-check-time">' + c.time + '</span>'
+            + '<span class="ddr-check-status">' + (STATUS_LABEL[c.status] || c.status) + '</span>'
+            + (c.latency_ms != null ? '<span class="ddr-check-lat">' + c.latency_ms + ' ms</span>' : '')
+            + (c.http_code  != null ? '<span class="ddr-check-code">HTTP ' + c.http_code + '</span>' : '')
+            + '</div>';
+    });
+
+    html += '</div>';
+    drawerCont.innerHTML = html;
+  }
+
+  function ddrCard(label, value, cls) {
+    return '<div class="ddr-card' + (cls ? ' ddr-card--' + cls : '') + '">'
+         + '<span class="ddr-card-value">' + value + '</span>'
+         + '<span class="ddr-card-label">' + label + '</span>'
+         + '</div>';
+  }
+
 })();
 </script>
 </body>

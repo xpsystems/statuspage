@@ -203,19 +203,108 @@ function db_history_full(PDO $pdo, int $limit = 90): array
 // ── Read: day-aggregated (for 90-day uptime bars) ────────────────────────────
 
 /**
+ * Compute real downtime/degraded seconds from consecutive timestamps.
+ * Groups consecutive 'down' (or 'degraded') rows and measures the span
+ * between first and last timestamp in each run, plus one check interval after.
+ *
+ * @param  array  $rows  Rows with 'checked_at', 'status' — must be sorted ASC
+ * @return array  ['down_secs' => int, 'degraded_secs' => int, 'spans' => array]
+ */
+function db_calc_downtime(array $rows): array
+{
+    $down_secs     = 0;
+    $degraded_secs = 0;
+    $spans         = [];
+
+    $n = count($rows);
+    if ($n === 0) return ['down_secs' => 0, 'degraded_secs' => 0, 'spans' => []];
+
+    // Estimate check interval from median gap between consecutive timestamps
+    $gaps = [];
+    for ($i = 1; $i < $n; $i++) {
+        $gap = (int)$rows[$i]['checked_at'] - (int)$rows[$i-1]['checked_at'];
+        if ($gap > 0) $gaps[] = $gap;
+    }
+    sort($gaps);
+    $interval = count($gaps) > 0 ? $gaps[(int)(count($gaps) / 2)] : 60;
+
+    // Walk rows and collect contiguous status runs
+    $i = 0;
+    while ($i < $n) {
+        $status = $rows[$i]['status'];
+        if ($status !== 'down' && $status !== 'degraded') { $i++; continue; }
+
+        $run_start = (int)$rows[$i]['checked_at'];
+        $run_end   = $run_start;
+        $j = $i;
+        while ($j < $n && $rows[$j]['status'] === $status) {
+            $run_end = (int)$rows[$j]['checked_at'];
+            $j++;
+        }
+        // Add one interval to account for the duration of the last check
+        $secs = ($run_end - $run_start) + $interval;
+
+        $spans[] = [
+            'status'     => $status,
+            'from'       => $run_start,
+            'to'         => $run_end + $interval,
+            'secs'       => $secs,
+        ];
+
+        if ($status === 'down')     $down_secs     += $secs;
+        if ($status === 'degraded') $degraded_secs += $secs;
+
+        $i = $j;
+    }
+
+    return [
+        'down_secs'     => $down_secs,
+        'degraded_secs' => $degraded_secs,
+        'spans'         => $spans,
+    ];
+}
+
+/**
+ * Returns all raw check rows for a slug on a given UTC date (YYYY-MM-DD).
+ * Used for the day-detail drawer/API.
+ */
+function db_day_detail_for_slug(PDO $pdo, string $slug, string $date): array
+{
+    $day_start = gmmktime(0, 0, 0, (int)substr($date, 5, 2), (int)substr($date, 8, 2), (int)substr($date, 0, 4));
+    $day_end   = $day_start + 86400;
+
+    $stmt = $pdo->prepare("
+        SELECT c.checked_at AS ts,
+               r.status,
+               r.latency_ms,
+               r.http_code
+        FROM   check_results r
+        JOIN   checks c ON c.id = r.check_id
+        WHERE  r.slug = ?
+          AND  c.checked_at >= ?
+          AND  c.checked_at <  ?
+        ORDER  BY c.checked_at ASC
+    ");
+    $stmt->execute([$slug, $day_start, $day_end]);
+    return $stmt->fetchAll();
+}
+
+/**
  * Returns one entry per calendar day (UTC) for the last $days days.
  *
  * Each entry:
- *   date          string  'YYYY-MM-DD'
- *   total_checks  int
- *   up_checks     int
- *   down_checks   int
+ *   date            string   'YYYY-MM-DD'
+ *   total_checks    int
+ *   up_checks       int
+ *   down_checks     int
  *   degraded_checks int
- *   uptime_pct    float   percentage of checks with status='up'
- *   outage_pct    float   percentage of checks with status='down'
- *   avg_latency_ms int|null  average of non-down latencies
- *   had_outage    bool    true if any check was 'down' that day
- *   had_degraded  bool    true if any check was 'degraded' that day
+ *   uptime_pct      float    percentage of checks with status='up'
+ *   outage_pct      float    percentage of checks with status='down'
+ *   avg_latency_ms  int|null average of non-down latencies
+ *   had_outage      bool
+ *   had_degraded    bool
+ *   down_secs       int      real downtime seconds derived from timestamps
+ *   degraded_secs   int      real degraded seconds derived from timestamps
  */
 function db_days_for_slug(PDO $pdo, string $slug, int $days = 90): array
 {
@@ -274,6 +363,8 @@ function db_days_for_slug(PDO $pdo, string $slug, int $days = 90): array
             fn($v) => $v !== null
         );
 
+        $dt = db_calc_downtime($checks);
+
         $out[] = [
             'date'            => $date,
             'total_checks'    => $total,
@@ -285,6 +376,8 @@ function db_days_for_slug(PDO $pdo, string $slug, int $days = 90): array
             'avg_latency_ms'  => $latencies ? (int) round(array_sum($latencies) / count($latencies)) : null,
             'had_outage'      => $down > 0,
             'had_degraded'    => $degraded > 0,
+            'down_secs'       => $dt['down_secs'],
+            'degraded_secs'   => $dt['degraded_secs'],
         ];
     }
 
