@@ -11,12 +11,16 @@ $config = [
         'mtex_status' => 'https://status.mtex.dev',
         'api_base'    => 'https://status.xpsystems.eu',
         'playground'  => 'https://api-sandbox.de/playground.html',
-        'version'     => '1.3.1',
+        'version'     => '1.4.0',
     ],
     'cache' => [
         'ttl'  => 90,
         'path' => __DIR__ . '/cache/status.json',
         'dir'  => __DIR__ . '/cache',
+    ],
+    'history' => [
+        'path'     => __DIR__ . '/cache/history.json',
+        'max_entries' => 1440, // ~24h at 1-min intervals; trims oldest beyond this
     ],
     'ping' => [
         'timeout'   => 6,
@@ -37,6 +41,16 @@ $config = [
             'method'  => 'GET',
             'path'    => '/api/service/{slug}',
             'summary' => 'Individual service status by slug',
+        ],
+        [
+            'method'  => 'GET',
+            'path'    => '/api/history',
+            'summary' => 'Full check history — response times and status over time',
+        ],
+        [
+            'method'  => 'GET',
+            'path'    => '/api/history/{slug}',
+            'summary' => 'Per-service check history with response times',
         ],
         [
             'method'  => 'GET',

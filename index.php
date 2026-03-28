@@ -66,6 +66,9 @@ function refresh_status(array $config): array
         json_encode($payload, JSON_PRETTY_PRINT)
     );
 
+    // Append to history log
+    append_history($config, $payload);
+
     return $payload;
 }
 
@@ -107,6 +110,67 @@ function ping_url(string $url, int $timeout, string $ua): array
     }
 
     return ['status' => 'up', 'code' => $code, 'latency_ms' => $latency];
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+
+function append_history(array $config, array $payload): void
+{
+    $path     = $config['history']['path'];
+    $max      = $config['history']['max_entries'];
+    $existing = [];
+
+    if (file_exists($path)) {
+        $raw = json_decode((string) file_get_contents($path), true);
+        if (is_array($raw)) {
+            $existing = $raw;
+        }
+    }
+
+    $entry = [
+        'ts'       => $payload['checked_at'],
+        'services' => $payload['services'], // slug => {status, code, latency_ms}
+    ];
+
+    $existing[] = $entry;
+
+    // Trim to max_entries (keep newest)
+    if (count($existing) > $max) {
+        $existing = array_slice($existing, -$max);
+    }
+
+    file_put_contents($path, json_encode($existing, JSON_PRETTY_PRINT));
+}
+
+function load_history(array $config): array
+{
+    $path = $config['history']['path'];
+    if (!file_exists($path)) {
+        return [];
+    }
+    $raw = json_decode((string) file_get_contents($path), true);
+    return is_array($raw) ? $raw : [];
+}
+
+/**
+ * Returns the last N history entries for a given slug,
+ * formatted as [{ts, status, latency_ms, http_code}].
+ */
+function history_for_slug(array $history, string $slug, int $limit = 90): array
+{
+    $out = [];
+    foreach ($history as $entry) {
+        $svc = $entry['services'][$slug] ?? null;
+        if ($svc === null) continue;
+        $out[] = [
+            'ts'         => $entry['ts'],
+            'status'     => $svc['status']     ?? 'unknown',
+            'latency_ms' => $svc['latency_ms'] ?? null,
+            'http_code'  => $svc['code']        ?? null,
+        ];
+    }
+    // Return last $limit entries
+    return array_slice($out, -$limit);
 }
 
 function build_full_status(array $config): array
@@ -238,6 +302,44 @@ if (str_starts_with($uri, '/api')) {
         exit;
     }
 
+    if ($uri === '/api/history') {
+        $history = load_history($config);
+        $limit   = min((int) ($_GET['limit'] ?? 90), 1440);
+        $out     = array_slice($history, -$limit);
+        echo json_encode([
+            'count'   => count($out),
+            'entries' => $out,
+        ], JSON_PRETTY_PRINT);
+        exit;
+    }
+
+    if (preg_match('#^/api/history/([a-z0-9\-]+)$#', $uri, $m)) {
+        $slug    = $m[1];
+        $history = load_history($config);
+        $limit   = min((int) ($_GET['limit'] ?? 90), 1440);
+        $entries = history_for_slug($history, $slug, $limit);
+        if (empty($entries)) {
+            http_response_code(404);
+            echo json_encode(['error' => 'No history found for slug', 'slug' => $slug], JSON_PRETTY_PRINT);
+            exit;
+        }
+        $latencies = array_filter(array_column($entries, 'latency_ms'), fn($v) => $v !== null);
+        echo json_encode([
+            'slug'    => $slug,
+            'count'   => count($entries),
+            'stats'   => [
+                'avg_latency_ms' => count($latencies) ? (int) round(array_sum($latencies) / count($latencies)) : null,
+                'min_latency_ms' => count($latencies) ? (int) min($latencies) : null,
+                'max_latency_ms' => count($latencies) ? (int) max($latencies) : null,
+                'uptime_pct'     => count($entries)
+                    ? round(count(array_filter($entries, fn($e) => $e['status'] === 'up')) / count($entries) * 100, 2)
+                    : null,
+            ],
+            'entries' => $entries,
+        ], JSON_PRETTY_PRINT);
+        exit;
+    }
+
     http_response_code(404);
     echo json_encode([
         'error'     => 'Unknown API endpoint',
@@ -261,6 +363,13 @@ foreach ($config['groups'] as $group) {
     $services_by_group[$group] = array_values(
         array_filter($services, fn($s) => $s['group'] === $group)
     );
+}
+
+// Load history for sparklines (last 60 checks per deployed service)
+$history     = load_history($config);
+$svc_history = [];
+foreach (deployed_services($config) as $svc) {
+    $svc_history[$svc['slug']] = history_for_slug($history, $svc['slug'], 60);
 }
 
 $playground_base = $config['site']['playground'];
@@ -404,37 +513,60 @@ $api_base        = $config['site']['api_base'];
         <h2 class="group-title"><?= $e($group) ?></h2>
         <div class="service-list">
           <?php foreach ($group_services as $svc): ?>
+          <?php
+            $hist    = $svc['is_deployed'] ? ($svc_history[$svc['slug']] ?? []) : [];
+            $up_cnt  = count(array_filter($hist, fn($h) => $h['status'] === 'up'));
+            $uptime  = count($hist) > 0 ? round($up_cnt / count($hist) * 100, 1) : null;
+            $latencies = array_filter(array_column($hist, 'latency_ms'), fn($v) => $v !== null);
+            $avg_lat = count($latencies) ? (int) round(array_sum($latencies) / count($latencies)) : null;
+          ?>
           <div
             class="service-row<?= !$svc['is_deployed'] ? ' service-row--not-deployed' : '' ?>"
             data-slug="<?= $e($svc['slug']) ?>"
             data-status="<?= $e($svc['status']) ?>"
           >
-            <div class="service-row-left">
-              <span class="status-indicator status-indicator--<?= $e($svc['status']) ?>" aria-hidden="true"></span>
-              <a
-                href="<?= $e($svc['url']) ?>"
-                class="service-name"
-                target="_blank"
-                rel="noopener noreferrer"
-              ><?= $e($svc['name']) ?></a>
+            <div class="service-row-main">
+              <div class="service-row-left">
+                <span class="status-indicator status-indicator--<?= $e($svc['status']) ?>" aria-hidden="true"></span>
+                <a href="<?= $e($svc['url']) ?>" class="service-name" target="_blank" rel="noopener noreferrer"><?= $e($svc['name']) ?></a>
+              </div>
+              <div class="service-row-right">
+                <?php if ($svc['latency_ms'] !== null): ?>
+                <span class="service-latency"><?= (int) $svc['latency_ms'] ?>ms</span>
+                <?php endif; ?>
+                <span class="service-status-label service-status-label--<?= $e($svc['status']) ?>">
+                  <?= match($svc['status']) {
+                      'up'           => 'Operational',
+                      'degraded'     => 'Degraded',
+                      'down'         => 'Outage',
+                      'not_deployed' => 'Not Deployed',
+                      default        => 'Unknown',
+                  } ?>
+                </span>
+                <?php if ($svc['http_code'] !== null): ?>
+                <span class="service-code">HTTP <?= (int) $svc['http_code'] ?></span>
+                <?php endif; ?>
+              </div>
             </div>
-            <div class="service-row-right">
-              <?php if ($svc['latency_ms'] !== null): ?>
-              <span class="service-latency"><?= (int) $svc['latency_ms'] ?>ms</span>
-              <?php endif; ?>
-              <span class="service-status-label service-status-label--<?= $e($svc['status']) ?>">
-                <?= match($svc['status']) {
-                    'up'           => 'Operational',
-                    'degraded'     => 'Degraded',
-                    'down'         => 'Outage',
-                    'not_deployed' => 'Not Deployed',
-                    default        => 'Unknown',
-                } ?>
-              </span>
-              <?php if ($svc['http_code'] !== null): ?>
-              <span class="service-code">HTTP <?= (int) $svc['http_code'] ?></span>
-              <?php endif; ?>
+            <?php if ($svc['is_deployed'] && count($hist) > 0): ?>
+            <div class="service-history">
+              <div class="uptime-bar" aria-label="Uptime history">
+                <?php foreach ($hist as $h): ?>
+                <span class="uptime-tick uptime-tick--<?= $e($h['status']) ?>"
+                      title="<?= $e(date('Y-m-d H:i', $h['ts'])) ?> — <?= $e($h['status']) ?><?= $h['latency_ms'] !== null ? ' — ' . (int)$h['latency_ms'] . 'ms' : '' ?>"></span>
+                <?php endforeach; ?>
+              </div>
+              <div class="uptime-meta">
+                <?php if ($uptime !== null): ?>
+                <span class="uptime-pct"><?= $uptime ?>% uptime</span>
+                <?php endif; ?>
+                <?php if ($avg_lat !== null): ?>
+                <span class="uptime-avg">avg <?= $avg_lat ?>ms</span>
+                <?php endif; ?>
+                <span class="uptime-window"><?= count($hist) ?> checks</span>
+              </div>
             </div>
+            <?php endif; ?>
           </div>
           <?php endforeach; ?>
         </div>
@@ -445,7 +577,7 @@ $api_base        = $config['site']['api_base'];
 
   <div class="section-divider">
     <svg viewBox="0 0 1440 60" preserveAspectRatio="none" aria-hidden="true">
-      <path d="M0,0 Q360,60 720,30 Q1080,0 1440,60 L1440,60 L0,60 Z" fill="currentColor"/>
+      <path d="M0,0 Q360,60 720,30 Q1080,0 1440,60 L1440,60 L0,60 Z" class="divider-fill-alt"/>
     </svg>
   </div>
 

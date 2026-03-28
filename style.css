@@ -147,11 +147,10 @@
     overflow: hidden;
 }
 
+/* ── Service rows (with history) ─────────────────────────────── */
 .service-row {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
+    flex-direction: column;
     padding: 14px 18px;
     background-color: var(--card);
     transition: background-color var(--transition);
@@ -161,6 +160,13 @@
 
 .service-row--not-deployed { opacity: 0.5; }
 .service-row--not-deployed .service-name { font-style: italic; }
+
+.service-row-main {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
 
 .service-row-left {
     display: flex;
@@ -458,4 +464,65 @@
     .service-latency,
     .service-code { display: none; }
     .api-try-banner { flex-direction: column; align-items: flex-start; }
+}
+
+/* ── Uptime history bar ──────────────────────────────────────── */
+.service-history {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.uptime-bar {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 28px;
+}
+
+.uptime-tick {
+    flex: 1;
+    min-width: 3px;
+    height: 100%;
+    border-radius: 2px;
+    transition: opacity var(--transition);
+    cursor: default;
+}
+
+.uptime-tick:hover { opacity: 0.75; }
+
+.uptime-tick--up       { background-color: var(--green);  }
+.uptime-tick--degraded { background-color: var(--yellow); }
+.uptime-tick--down     { background-color: var(--red);    }
+.uptime-tick--unknown  { background-color: var(--border); }
+
+.uptime-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.uptime-pct {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--green);
+}
+
+.uptime-avg {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    font-family: var(--mono);
+}
+
+.uptime-window {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-left: auto;
+}
+
+/* ── Section divider fix (theme-aware fill) ──────────────────── */
+.section-divider .divider-fill-alt {
+    fill: var(--bg-alt);
+    transition: fill 0.3s ease;
 }
