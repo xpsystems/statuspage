@@ -12,6 +12,42 @@ declare(strict_types=1);
  */
 
 /**
+ * Calculate real downtime seconds from a set of check rows for a given status.
+ * Rows must have a 'ts' or 'checked_at' key (unix timestamp), sorted ASC.
+ */
+function stats_calc_downtime_secs(array $rows, string $target_status): int
+{
+    if (empty($rows)) return 0;
+
+    // Normalise timestamp key
+    $ts_key = isset($rows[0]['ts']) ? 'ts' : 'checked_at';
+
+    // Estimate median check interval
+    $gaps = [];
+    $n    = count($rows);
+    for ($i = 1; $i < $n; $i++) {
+        $gap = (int)$rows[$i][$ts_key] - (int)$rows[$i - 1][$ts_key];
+        if ($gap > 0) $gaps[] = $gap;
+    }
+    sort($gaps);
+    $interval = count($gaps) > 0 ? $gaps[(int)(count($gaps) / 2)] : 60;
+
+    $secs = 0;
+    $i    = 0;
+    while ($i < $n) {
+        if ($rows[$i]['status'] !== $target_status) { $i++; continue; }
+        $run_start = (int)$rows[$i][$ts_key];
+        $run_end   = $run_start;
+        while ($i < $n && $rows[$i]['status'] === $target_status) {
+            $run_end = (int)$rows[$i][$ts_key];
+            $i++;
+        }
+        $secs += ($run_end - $run_start) + $interval;
+    }
+    return $secs;
+}
+
+/**
  * Aggregate an array of check rows into per-day buckets.
  *
  * @param  array  $rows   Check rows with 'ts', 'status', 'latency_ms'
@@ -46,6 +82,8 @@ function stats_days(array $rows, int $days = 90): array
                 'avg_latency_ms'  => null,
                 'had_outage'      => false,
                 'had_degraded'    => false,
+                'down_secs'       => 0,
+                'degraded_secs'   => 0,
             ];
             continue;
         }
@@ -71,6 +109,8 @@ function stats_days(array $rows, int $days = 90): array
             'avg_latency_ms'  => $latencies ? (int) round(array_sum($latencies) / count($latencies)) : null,
             'had_outage'      => $down > 0,
             'had_degraded'    => $degraded > 0,
+            'down_secs'       => stats_calc_downtime_secs($checks, 'down'),
+            'degraded_secs'   => stats_calc_downtime_secs($checks, 'degraded'),
         ];
     }
 

@@ -9,9 +9,9 @@ $config = [
         'org_url'     => 'https://xpsystems.eu',
         'github_url'  => 'https://github.com/xpsystems/statuspage',
         'mtex_status' => 'https://status.mtex.dev',
-        'api_base'    => 'https://status.xpsystems.eu',
+        'api_base'    => '',
         'playground'  => 'https://api-sandbox.de/playground.html',
-        'version'     => '3.3.0',
+        'version'     => '4.1.3',
     ],
     'cache' => [
         'ttl'  => 90,
@@ -28,7 +28,7 @@ $config = [
     //   sqlite: php -m | grep pdo_sqlite
     //   mysql:  php -m | grep pdo_mysql
     'db' => [
-        'driver' => 'none',             // ← change to 'sqlite' or 'mysql' once verified
+        'driver' => 'sqlite',             // ← change to 'sqlite' or 'mysql' once verified
 
         // SQLite — file path (relative to this file)
         'sqlite_path' => __DIR__ . '/cache/status.db',

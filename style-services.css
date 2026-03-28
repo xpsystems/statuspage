@@ -1,0 +1,107 @@
+/* style-services.css — service rows, uptime bars, history */
+
+/* ── Uptime history bar ──────────────────────────────────────── */
+.service-history {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.uptime-bar {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 28px;
+}
+
+.uptime-tick {
+    flex: 1;
+    min-width: 3px;
+    height: 100%;
+    border-radius: 2px;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease, border-radius 0.15s ease;
+    cursor: default;
+    position: relative;
+}
+
+.uptime-tick:hover {
+    transform: scaleY(1.6) scaleX(1.5);
+    transform-origin: bottom center;
+    border-radius: 3px 3px 1px 1px;
+    z-index: 20;
+    filter: brightness(1.15);
+}
+
+.uptime-tick--up:hover              { box-shadow: 0 -3px 10px rgba(34,197,94,0.6),  0 0 0 1px var(--green); }
+.uptime-tick--degraded:hover        { box-shadow: 0 -3px 10px rgba(245,158,11,0.6), 0 0 0 1px var(--yellow); }
+.uptime-tick--outage-minor:hover    { box-shadow: 0 -3px 10px rgba(249,115,22,0.6), 0 0 0 1px #f97316; }
+.uptime-tick--outage-major:hover    { box-shadow: 0 -3px 10px rgba(239,68,68,0.6),  0 0 0 1px #ef4444; }
+.uptime-tick--outage-critical:hover { box-shadow: 0 -3px 10px rgba(153,27,27,0.7),  0 0 0 1px #991b1b; }
+.uptime-tick--unknown:hover         { box-shadow: 0 -3px 8px  rgba(0,0,0,0.3),       0 0 0 1px var(--border-hover); }
+
+/* ── Downtime severity stages ────────────────────────────────── */
+.uptime-tick--up              { background-color: var(--green); }
+.uptime-tick--degraded        { background-color: var(--yellow); }
+.uptime-tick--outage-minor    { background-color: #f97316; }
+.uptime-tick--outage-major    { background-color: #ef4444; }
+.uptime-tick--outage-critical { background-color: #991b1b; }
+.uptime-tick--unknown         { background-color: var(--border); }
+
+.uptime-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.uptime-pct {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--green);
+}
+
+.uptime-avg {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    font-family: var(--mono);
+}
+
+.uptime-window {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    margin-left: auto;
+}
+
+/* ── Section divider fix (theme-aware fill) ──────────────────── */
+.section-divider .divider-fill-alt {
+    fill: var(--bg-alt);
+    transition: fill 0.3s ease;
+}
+
+/* ── Status change flash ─────────────────────────────────────── */
+@keyframes flash-change {
+    0%   { background-color: rgba(79, 142, 247, 0.12); }
+    100% { background-color: transparent; }
+}
+
+.service-row.status-changed {
+    animation: flash-change 0.8s ease-out forwards;
+}
+
+/* ── Stale hint ──────────────────────────────────────────────── */
+.stale-hint {
+    font-size: 0.75rem;
+    color: var(--yellow);
+    margin-left: 4px;
+    opacity: 0.8;
+}
+
+/* ── Unknown/checking state ──────────────────────────────────── */
+.hero-bar--unknown {
+    background-color: var(--bg-alt);
+    border-bottom-color: var(--border);
+}
+
+.hero-bar--unknown .hero-bar-title {
+    color: var(--text-muted);
+}
