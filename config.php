@@ -9,7 +9,7 @@ $config = [
         'org_url'     => 'https://xpsystems.eu',
         'github_url'  => 'https://github.com/xpsystems/statuspage',
         'mtex_status' => 'https://status.mtex.dev',
-        'api_base'    => 'https://status.xpsystems.eu',
+        'api_base'    => '',
         'playground'  => 'https://api-sandbox.de/playground.html',
         'version'     => '3.3.0',
     ],
