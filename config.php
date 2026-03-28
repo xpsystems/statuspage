@@ -39,9 +39,6 @@ $config = [
         'mysql_dbname'   => 'xpsystems_status',
         'mysql_user'     => 'db_user',
         'mysql_password' => 'db_password',
-
-        // How many days of history to keep (pruned on each check run)
-        'keep_days' => 30,
     ],
     'ping' => [
         'timeout'   => 6,

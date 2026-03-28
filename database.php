@@ -5,20 +5,14 @@ declare(strict_types=1);
  * database.php — xpsystems statuspage
  *
  * Thin PDO wrapper supporting SQLite and MySQL.
- * Driver is selected via $config['db']['driver'].
+ * Data is kept forever — no pruning.
  *
- * SQLite  → requires pdo_sqlite PHP extension.
- *           Check with: php -m | grep -i sqlite
- * MySQL   → requires pdo_mysql PHP extension.
- *           Check with: php -m | grep -i mysql
- *
- * If neither extension is available, set driver = 'none' in config.php
- * to use the JSON file fallback instead.
+ * Driver selected via $config['db']['driver']:
+ *   'sqlite' → requires pdo_sqlite  (php -m | grep pdo_sqlite)
+ *   'mysql'  → requires pdo_mysql   (php -m | grep pdo_mysql)
+ *   'none'   → JSON file fallback
  */
 
-/**
- * Returns true if the requested driver's PDO extension is loaded.
- */
 function db_driver_available(string $driver): bool
 {
     return match($driver) {
@@ -35,35 +29,25 @@ function db_connect(array $config): PDO
     if (!db_driver_available($db['driver'])) {
         throw new \RuntimeException(
             "PDO driver for '{$db['driver']}' is not available. " .
-            "Install the pdo_{$db['driver']} PHP extension, or set db.driver = 'none' in config.php."
+            "Install pdo_{$db['driver']} or set db.driver = 'none' in config.php."
         );
     }
 
     if ($db['driver'] === 'sqlite') {
         $dir = dirname($db['sqlite_path']);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0755, true);
-        }
+        if (!is_dir($dir)) mkdir($dir, 0755, true);
         $pdo = new PDO('sqlite:' . $db['sqlite_path']);
         $pdo->exec('PRAGMA journal_mode=WAL');
         $pdo->exec('PRAGMA foreign_keys=ON');
 
-    } elseif ($db['driver'] === 'mysql') {
+    } else {
         $dsn = sprintf(
             'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
-            $db['mysql_host'],
-            $db['mysql_port'],
-            $db['mysql_dbname']
+            $db['mysql_host'], $db['mysql_port'], $db['mysql_dbname']
         );
         $pdo = new PDO($dsn, $db['mysql_user'], $db['mysql_password'], [
-            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4",
         ]);
-    } else {
-        throw new \InvalidArgumentException(
-            "Unknown DB driver: '{$db['driver']}'. Use 'sqlite', 'mysql', or 'none'."
-        );
     }
 
     $pdo->setAttribute(PDO::ATTR_ERRMODE,            PDO::ERRMODE_EXCEPTION);
@@ -77,20 +61,14 @@ function db_connect(array $config): PDO
 function db_migrate(PDO $pdo, string $driver): void
 {
     if ($driver === 'mysql') {
-        // MySQL: use VARCHAR for indexed columns (TEXT columns can't be indexed
-        // without a prefix, and prefix indexes are unreliable for FK cascades).
-        // overall max length: 'partial_outage' = 14 chars → VARCHAR(32) is safe.
-        // slug max length: longest realistic slug ~64 chars → VARCHAR(128).
-        // status max length: 'not_deployed' = 12 chars → VARCHAR(32).
         $pdo->exec("
             CREATE TABLE IF NOT EXISTS checks (
                 id         INT AUTO_INCREMENT PRIMARY KEY,
-                checked_at INT          NOT NULL,
-                overall    VARCHAR(32)  NOT NULL,
+                checked_at INT         NOT NULL,
+                overall    VARCHAR(32) NOT NULL,
                 INDEX idx_checks_ts (checked_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ");
-
         $pdo->exec("
             CREATE TABLE IF NOT EXISTS check_results (
                 id         INT AUTO_INCREMENT PRIMARY KEY,
@@ -104,9 +82,7 @@ function db_migrate(PDO $pdo, string $driver): void
                     REFERENCES checks(id) ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ");
-
     } else {
-        // SQLite
         $pdo->exec("
             CREATE TABLE IF NOT EXISTS checks (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,7 +90,6 @@ function db_migrate(PDO $pdo, string $driver): void
                 overall    TEXT    NOT NULL
             )
         ");
-
         $pdo->exec("
             CREATE TABLE IF NOT EXISTS check_results (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,22 +101,13 @@ function db_migrate(PDO $pdo, string $driver): void
                 FOREIGN KEY (check_id) REFERENCES checks(id) ON DELETE CASCADE
             )
         ");
-
-        $pdo->exec("
-            CREATE INDEX IF NOT EXISTS idx_cr_slug_check
-            ON check_results (slug, check_id)
-        ");
-
-        $pdo->exec("
-            CREATE INDEX IF NOT EXISTS idx_checks_ts
-            ON checks (checked_at)
-        ");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_cr_slug_check ON check_results (slug, check_id)");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_checks_ts ON checks (checked_at)");
     }
 }
 
-/**
- * Persist one full check run to the database.
- */
+// ── Write ─────────────────────────────────────────────────────────────────────
+
 function db_insert_check(PDO $pdo, int $checked_at, string $overall, array $results): int
 {
     $stmt = $pdo->prepare('INSERT INTO checks (checked_at, overall) VALUES (?, ?)');
@@ -152,7 +118,6 @@ function db_insert_check(PDO $pdo, int $checked_at, string $overall, array $resu
         'INSERT INTO check_results (check_id, slug, status, http_code, latency_ms)
          VALUES (?, ?, ?, ?, ?)'
     );
-
     foreach ($results as $slug => $r) {
         $stmt->execute([
             $check_id,
@@ -166,8 +131,10 @@ function db_insert_check(PDO $pdo, int $checked_at, string $overall, array $resu
     return $check_id;
 }
 
+// ── Read: recent checks (for sparkline) ──────────────────────────────────────
+
 /**
- * Load the last $limit check rows for a given slug (chronological order).
+ * Last $limit individual check rows for a slug, chronological.
  */
 function db_history_for_slug(PDO $pdo, string $slug, int $limit = 90): array
 {
@@ -187,7 +154,7 @@ function db_history_for_slug(PDO $pdo, string $slug, int $limit = 90): array
 }
 
 /**
- * Load the last $limit full check entries (all slugs per check).
+ * Last $limit full check entries (all slugs), chronological.
  */
 function db_history_full(PDO $pdo, int $limit = 90): array
 {
@@ -200,9 +167,7 @@ function db_history_full(PDO $pdo, int $limit = 90): array
     $stmt->execute([$limit]);
     $checks = array_reverse($stmt->fetchAll());
 
-    if (empty($checks)) {
-        return [];
-    }
+    if (empty($checks)) return [];
 
     $ids          = array_column($checks, 'id');
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
@@ -235,13 +200,152 @@ function db_history_full(PDO $pdo, int $limit = 90): array
     return $out;
 }
 
+// ── Read: day-aggregated (for 90-day uptime bars) ────────────────────────────
+
 /**
- * Prune checks older than $keep_days days (cascades to check_results via FK).
+ * Returns one entry per calendar day (UTC) for the last $days days.
+ *
+ * Each entry:
+ *   date          string  'YYYY-MM-DD'
+ *   total_checks  int
+ *   up_checks     int
+ *   down_checks   int
+ *   degraded_checks int
+ *   uptime_pct    float   percentage of checks with status='up'
+ *   outage_pct    float   percentage of checks with status='down'
+ *   avg_latency_ms int|null  average of non-down latencies
+ *   had_outage    bool    true if any check was 'down' that day
+ *   had_degraded  bool    true if any check was 'degraded' that day
  */
-function db_prune(PDO $pdo, int $keep_days = 30): int
+function db_days_for_slug(PDO $pdo, string $slug, int $days = 90): array
 {
-    $cutoff = time() - ($keep_days * 86400);
-    $stmt   = $pdo->prepare('DELETE FROM checks WHERE checked_at < ?');
-    $stmt->execute([$cutoff]);
-    return $stmt->rowCount();
+    $since = mktime(0, 0, 0) - (($days - 1) * 86400); // start of day, $days ago
+
+    $stmt = $pdo->prepare("
+        SELECT c.checked_at,
+               r.status,
+               r.latency_ms
+        FROM   check_results r
+        JOIN   checks c ON c.id = r.check_id
+        WHERE  r.slug = ?
+          AND  c.checked_at >= ?
+        ORDER  BY c.checked_at ASC
+    ");
+    $stmt->execute([$slug, $since]);
+    $rows = $stmt->fetchAll();
+
+    // Group by UTC date
+    $by_day = [];
+    foreach ($rows as $row) {
+        $date = gmdate('Y-m-d', (int) $row['checked_at']);
+        $by_day[$date][] = $row;
+    }
+
+    // Build one entry per day in the window (fill gaps with null)
+    $out = [];
+    for ($i = $days - 1; $i >= 0; $i--) {
+        $date    = gmdate('Y-m-d', time() - $i * 86400);
+        $checks  = $by_day[$date] ?? [];
+
+        if (empty($checks)) {
+            $out[] = [
+                'date'            => $date,
+                'total_checks'    => 0,
+                'up_checks'       => 0,
+                'down_checks'     => 0,
+                'degraded_checks' => 0,
+                'uptime_pct'      => null,
+                'outage_pct'      => null,
+                'avg_latency_ms'  => null,
+                'had_outage'      => false,
+                'had_degraded'    => false,
+            ];
+            continue;
+        }
+
+        $total    = count($checks);
+        $up       = count(array_filter($checks, fn($r) => $r['status'] === 'up'));
+        $down     = count(array_filter($checks, fn($r) => $r['status'] === 'down'));
+        $degraded = count(array_filter($checks, fn($r) => $r['status'] === 'degraded'));
+
+        // Latency: exclude down checks (connection failures skew the average)
+        $latencies = array_filter(
+            array_map(fn($r) => $r['status'] !== 'down' ? (int) $r['latency_ms'] : null, $checks),
+            fn($v) => $v !== null
+        );
+
+        $out[] = [
+            'date'            => $date,
+            'total_checks'    => $total,
+            'up_checks'       => $up,
+            'down_checks'     => $down,
+            'degraded_checks' => $degraded,
+            'uptime_pct'      => round($up   / $total * 100, 2),
+            'outage_pct'      => round($down / $total * 100, 2),
+            'avg_latency_ms'  => $latencies ? (int) round(array_sum($latencies) / count($latencies)) : null,
+            'had_outage'      => $down > 0,
+            'had_degraded'    => $degraded > 0,
+        ];
+    }
+
+    return $out;
+}
+
+/**
+ * Overall uptime stats for a slug over the last $days days.
+ *
+ * Returns:
+ *   uptime_pct      float   overall % of checks that were 'up'
+ *   outage_pct      float   overall % of checks that were 'down'
+ *   avg_latency_ms  int|null
+ *   total_checks    int
+ *   days_with_outage int    number of calendar days that had at least one 'down'
+ */
+function db_uptime_stats(PDO $pdo, string $slug, int $days = 90): array
+{
+    $since = time() - ($days * 86400);
+
+    $stmt = $pdo->prepare("
+        SELECT r.status, r.latency_ms, c.checked_at
+        FROM   check_results r
+        JOIN   checks c ON c.id = r.check_id
+        WHERE  r.slug = ?
+          AND  c.checked_at >= ?
+    ");
+    $stmt->execute([$slug, $since]);
+    $rows = $stmt->fetchAll();
+
+    if (empty($rows)) {
+        return [
+            'uptime_pct'      => null,
+            'outage_pct'      => null,
+            'avg_latency_ms'  => null,
+            'total_checks'    => 0,
+            'days_with_outage' => 0,
+        ];
+    }
+
+    $total    = count($rows);
+    $up       = count(array_filter($rows, fn($r) => $r['status'] === 'up'));
+    $down     = count(array_filter($rows, fn($r) => $r['status'] === 'down'));
+
+    $latencies = array_filter(
+        array_map(fn($r) => $r['status'] !== 'down' ? (int) $r['latency_ms'] : null, $rows),
+        fn($v) => $v !== null
+    );
+
+    $outage_days = count(array_unique(
+        array_map(
+            fn($r) => gmdate('Y-m-d', (int) $r['checked_at']),
+            array_filter($rows, fn($r) => $r['status'] === 'down')
+        )
+    ));
+
+    return [
+        'uptime_pct'       => round($up   / $total * 100, 3),
+        'outage_pct'       => round($down / $total * 100, 3),
+        'avg_latency_ms'   => $latencies ? (int) round(array_sum($latencies) / count($latencies)) : null,
+        'total_checks'     => $total,
+        'days_with_outage' => $outage_days,
+    ];
 }

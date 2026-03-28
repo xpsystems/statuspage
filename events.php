@@ -153,7 +153,6 @@ if (!function_exists('sse_send')) {
             try {
                 $pdo = db_connect($config);
                 db_insert_check($pdo, $checked_at, $overall, $results);
-                db_prune($pdo, (int) ($config['db']['keep_days'] ?? 30));
                 return;
             } catch (\Throwable $ex) {
                 error_log('[xps-events] DB error: ' . $ex->getMessage());
