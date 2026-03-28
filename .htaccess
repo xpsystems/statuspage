@@ -4,6 +4,10 @@ Options -MultiViews
 RewriteEngine On
 RewriteBase /
 
+# Clean URL for SSE stream
+RewriteRule ^events$ events.php [L]
+
+# Always serve real PHP files directly
 RewriteCond %{REQUEST_FILENAME} -f
 RewriteRule ^ - [L]
 
@@ -24,5 +28,4 @@ Header set X-Content-Type-Options "nosniff"
 Header set X-Frame-Options "SAMEORIGIN"
 Header set Referrer-Policy "strict-origin-when-cross-origin"
 
-ErrorDocument 404 /index.php
 ErrorDocument 500 /index.php

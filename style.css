@@ -587,3 +587,31 @@ html.is-switching-theme *, html.is-switching-theme *::before, html.is-switching-
     fill: var(--bg-alt);
     transition: fill 0.3s ease;
 }
+
+/* ── Status change flash ─────────────────────────────────────── */
+@keyframes flash-change {
+    0%   { background-color: rgba(79, 142, 247, 0.12); }
+    100% { background-color: transparent; }
+}
+
+.service-row.status-changed {
+    animation: flash-change 0.8s ease-out forwards;
+}
+
+/* ── Stale hint ──────────────────────────────────────────────── */
+.stale-hint {
+    font-size: 0.75rem;
+    color: var(--yellow);
+    margin-left: 4px;
+    opacity: 0.8;
+}
+
+/* ── Checking skeleton pulse ─────────────────────────────────── */
+.hero-bar--unknown {
+    background-color: var(--bg-alt);
+    border-bottom-color: var(--border);
+}
+
+.hero-bar--unknown .hero-bar-title {
+    color: var(--text-muted);
+}
