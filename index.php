@@ -563,7 +563,7 @@ $api_base        = $config['site']['api_base'];
                 <?php foreach ($days_hist as $d): ?>
                 <?php
                   $ds        = stats_day_status($d);
-                  $day_label = isset($d['date']) ? $d['date'] : (isset($d['ts']) ? date('Y-m-d', (int)$d['ts']) : '');
+                  $day_label = isset($d['date']) ? $d['date'] : (isset($d['ts']) ? gmdate('Y-m-d', (int)$d['ts']) : '');
                   $status_labels = [
                     'up'              => 'Operational',
                     'degraded'        => 'Degraded',
@@ -572,16 +572,25 @@ $api_base        = $config['site']['api_base'];
                     'outage-critical' => 'Critical Outage',
                     'unknown'         => 'No data',
                   ];
-                  $tip_status = $status_labels[$ds] ?? ucfirst($ds);
-                  $tip_lat    = isset($d['avg_latency_ms']) && $d['avg_latency_ms'] !== null ? (int)$d['avg_latency_ms'] . 'ms avg' : null;
-                  $tip_uptime = isset($d['uptime_pct']) && $d['uptime_pct'] !== null ? $d['uptime_pct'] . '% up' : null;
-                  $tip_meta   = implode(' · ', array_filter([$tip_uptime, $tip_lat]));
+                  $tip_status    = $status_labels[$ds] ?? ucfirst($ds);
+                  $total_checks  = (int)($d['total_checks'] ?? 0);
+                  $down_checks   = (int)($d['down_checks']  ?? 0);
+                  $deg_checks    = (int)($d['degraded_checks'] ?? 0);
+                  $avg_lat       = isset($d['avg_latency_ms']) && $d['avg_latency_ms'] !== null ? (int)$d['avg_latency_ms'] : null;
+                  $uptime_pct    = isset($d['uptime_pct'])    && $d['uptime_pct']    !== null ? (float)$d['uptime_pct']    : null;
+                  // Estimate downtime: each check ≈ 1 min interval
+                  $down_mins     = $down_checks;
+                  $deg_mins      = $deg_checks;
                 ?>
                 <span class="uptime-tick uptime-tick--<?= $e($ds) ?>"
                   data-tip-date="<?= $e($day_label) ?>"
                   data-tip-status="<?= $e($tip_status) ?>"
                   data-tip-status-cls="<?= $e($ds) ?>"
-                  data-tip-meta="<?= $e($tip_meta) ?>"
+                  data-tip-uptime="<?= $uptime_pct !== null ? $uptime_pct : '' ?>"
+                  data-tip-lat="<?= $avg_lat !== null ? $avg_lat : '' ?>"
+                  data-tip-down-mins="<?= $down_mins ?>"
+                  data-tip-deg-mins="<?= $deg_mins ?>"
+                  data-tip-total="<?= $total_checks ?>"
                 ></span>
                 <?php endforeach; ?>
               </div>
@@ -767,41 +776,80 @@ if ('serviceWorker' in navigator) {
 }
 </script>
 <div id="day-tooltip" class="day-tooltip" aria-hidden="true">
-  <span class="day-tooltip-date" id="day-tooltip-date"></span>
-  <span class="day-tooltip-status" id="day-tooltip-status"></span>
-  <span class="day-tooltip-meta" id="day-tooltip-meta"></span>
+  <div class="day-tooltip-header">
+    <span class="day-tooltip-date" id="day-tooltip-date"></span>
+    <span class="day-tooltip-badge" id="day-tooltip-badge"></span>
+  </div>
+  <div class="day-tooltip-rows" id="day-tooltip-rows"></div>
 </div>
 <script>
 (function () {
-  var tip     = document.getElementById('day-tooltip');
-  var tipDate = document.getElementById('day-tooltip-date');
-  var tipStat = document.getElementById('day-tooltip-status');
-  var tipMeta = document.getElementById('day-tooltip-meta');
+  var tip      = document.getElementById('day-tooltip');
+  var tipDate  = document.getElementById('day-tooltip-date');
+  var tipBadge = document.getElementById('day-tooltip-badge');
+  var tipRows  = document.getElementById('day-tooltip-rows');
+
   var STATUS_CLS = ['up','degraded','outage-minor','outage-major','outage-critical','unknown'];
+
+  function fmtMins(m) {
+    m = parseInt(m, 10);
+    if (!m || m <= 0) return null;
+    var h = Math.floor(m / 60);
+    var min = m % 60;
+    if (h > 0 && min > 0) return h + 'h ' + min + 'm';
+    if (h > 0) return h + 'h';
+    return min + 'm';
+  }
+
+  function row(label, value) {
+    var el = document.createElement('div');
+    el.className = 'day-tooltip-row';
+    el.innerHTML = '<span class="day-tooltip-row-label">' + label + '</span>'
+                 + '<span class="day-tooltip-row-value">' + value + '</span>';
+    return el;
+  }
 
   document.querySelectorAll('.uptime-tick[data-tip-status]').forEach(function (tick) {
     tick.addEventListener('mouseenter', function (e) {
-      var date   = tick.dataset.tipDate   || '';
-      var status = tick.dataset.tipStatus || '';
-      var cls    = tick.dataset.tipStatusCls || '';
-      var meta   = tick.dataset.tipMeta   || '';
+      var date      = tick.dataset.tipDate       || '';
+      var status    = tick.dataset.tipStatus     || '';
+      var cls       = tick.dataset.tipStatusCls  || '';
+      var uptime    = tick.dataset.tipUptime     || '';
+      var lat       = tick.dataset.tipLat        || '';
+      var downMins  = tick.dataset.tipDownMins   || '0';
+      var degMins   = tick.dataset.tipDegMins    || '0';
+      var total     = tick.dataset.tipTotal      || '0';
 
+      // Header
       tipDate.textContent = date;
-      tipDate.style.display = date ? '' : 'none';
+      STATUS_CLS.forEach(function (c) { tipBadge.classList.remove('day-tooltip-badge--' + c); });
+      tipBadge.textContent = status;
+      if (cls) tipBadge.classList.add('day-tooltip-badge--' + cls);
 
-      tipStat.textContent = status;
-      STATUS_CLS.forEach(function (c) { tipStat.classList.remove('day-tooltip-status--' + c); });
-      if (cls) tipStat.classList.add('day-tooltip-status--' + cls);
+      // Rows
+      tipRows.innerHTML = '';
 
-      tipMeta.textContent = meta;
-      tipMeta.style.display = meta ? '' : 'none';
+      if (uptime !== '') {
+        tipRows.appendChild(row('Uptime', parseFloat(uptime).toFixed(2) + '%'));
+      }
+
+      var downFmt = fmtMins(downMins);
+      if (downFmt) tipRows.appendChild(row('Downtime', downFmt));
+
+      var degFmt = fmtMins(degMins);
+      if (degFmt) tipRows.appendChild(row('Degraded', degFmt));
+
+      if (lat !== '') tipRows.appendChild(row('Avg latency', lat + ' ms'));
+
+      if (parseInt(total, 10) > 0) {
+        tipRows.appendChild(row('Checks', total));
+      }
 
       tip.classList.add('day-tooltip--visible');
       position(e);
     });
 
     tick.addEventListener('mousemove', position);
-
     tick.addEventListener('mouseleave', function () {
       tip.classList.remove('day-tooltip--visible');
     });
@@ -812,11 +860,8 @@ if ('serviceWorker' in navigator) {
     var th = tip.offsetHeight;
     var x  = e.clientX - tw / 2;
     var y  = e.clientY - th - 14;
-
-    // keep within viewport
-    x = Math.max(8, Math.min(x, window.innerWidth - tw - 8));
+    x = Math.max(8, Math.min(x, window.innerWidth  - tw - 8));
     if (y < 8) y = e.clientY + 18;
-
     tip.style.left = x + 'px';
     tip.style.top  = y + 'px';
   }

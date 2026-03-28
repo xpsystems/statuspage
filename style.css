@@ -547,79 +547,110 @@ html.is-switching-theme *, html.is-switching-theme *::before, html.is-switching-
     min-width: 3px;
     height: 100%;
     border-radius: 2px;
-    transition: transform 0.15s ease, box-shadow 0.15s ease, border-radius 0.15s ease;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease, border-radius 0.15s ease;
     cursor: default;
     position: relative;
 }
 
 .uptime-tick:hover {
-    transform: scaleY(1.5);
-    transform-origin: bottom;
-    border-radius: 3px 3px 2px 2px;
+    transform: scaleY(1.6) scaleX(1.5);
+    transform-origin: bottom center;
+    border-radius: 3px 3px 1px 1px;
     z-index: 20;
+    filter: brightness(1.15);
 }
 
-.uptime-tick--up:hover              { box-shadow: 0 0 0 1.5px var(--green),   0 4px 12px rgba(34,197,94,0.35); }
-.uptime-tick--degraded:hover        { box-shadow: 0 0 0 1.5px var(--yellow),  0 4px 12px rgba(245,158,11,0.35); }
-.uptime-tick--outage-minor:hover    { box-shadow: 0 0 0 1.5px #f97316,        0 4px 12px rgba(249,115,22,0.35); }
-.uptime-tick--outage-major:hover    { box-shadow: 0 0 0 1.5px #ef4444,        0 4px 12px rgba(239,68,68,0.35); }
-.uptime-tick--outage-critical:hover { box-shadow: 0 0 0 1.5px #991b1b,        0 4px 12px rgba(153,27,27,0.4); }
-.uptime-tick--unknown:hover         { box-shadow: 0 0 0 1.5px var(--border-hover), 0 4px 8px rgba(0,0,0,0.2); }
+.uptime-tick--up:hover              { box-shadow: 0 -3px 10px rgba(34,197,94,0.6),  0 0 0 1px var(--green); }
+.uptime-tick--degraded:hover        { box-shadow: 0 -3px 10px rgba(245,158,11,0.6), 0 0 0 1px var(--yellow); }
+.uptime-tick--outage-minor:hover    { box-shadow: 0 -3px 10px rgba(249,115,22,0.6), 0 0 0 1px #f97316; }
+.uptime-tick--outage-major:hover    { box-shadow: 0 -3px 10px rgba(239,68,68,0.6),  0 0 0 1px #ef4444; }
+.uptime-tick--outage-critical:hover { box-shadow: 0 -3px 10px rgba(153,27,27,0.7),  0 0 0 1px #991b1b; }
+.uptime-tick--unknown:hover         { box-shadow: 0 -3px 8px  rgba(0,0,0,0.3),       0 0 0 1px var(--border-hover); }
 
 /* ── HTML Tooltip ────────────────────────────────────────────── */
 .day-tooltip {
     position: fixed;
-    min-width: 130px;
+    width: 200px;
     background: var(--card);
     border: 1px solid var(--border-hover);
     border-radius: var(--radius-sm);
-    padding: 8px 10px;
+    overflow: hidden;
     pointer-events: none;
     z-index: 9999;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3);
+    font-family: 'Inter', system-ui, sans-serif;
     opacity: 0;
-    transition: opacity 0.13s ease;
+    transition: opacity 0.12s ease;
 }
 
 [data-theme="light"] .day-tooltip {
-    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.13), 0 2px 6px rgba(0,0,0,0.07);
 }
 
-.day-tooltip--visible {
-    opacity: 1;
+.day-tooltip--visible { opacity: 1; }
+
+.day-tooltip-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 9px 12px 8px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-alt);
 }
 
 .day-tooltip-date {
     font-size: 0.7rem;
-    font-family: var(--mono);
-    color: var(--text-muted);
-    letter-spacing: 0.02em;
-}
-
-.day-tooltip-status {
-    font-size: 0.75rem;
     font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    font-family: var(--mono);
 }
 
-.day-tooltip-status--up              { color: var(--green); }
-.day-tooltip-status--degraded        { color: var(--yellow); }
-.day-tooltip-status--outage-minor    { color: #f97316; }
-.day-tooltip-status--outage-major    { color: #ef4444; }
-.day-tooltip-status--outage-critical { color: #991b1b; }
-.day-tooltip-status--unknown         { color: var(--text-dim); }
+.day-tooltip-badge {
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    white-space: nowrap;
+}
 
-.day-tooltip-meta {
+.day-tooltip-badge--up              { color: var(--green);  background: rgba(34,197,94,0.1);   border-color: var(--green-border); }
+.day-tooltip-badge--degraded        { color: var(--yellow); background: rgba(245,158,11,0.1);  border-color: var(--yellow-border); }
+.day-tooltip-badge--outage-minor    { color: #f97316;       background: rgba(249,115,22,0.1);  border-color: rgba(249,115,22,0.3); }
+.day-tooltip-badge--outage-major    { color: #ef4444;       background: rgba(239,68,68,0.1);   border-color: var(--red-border); }
+.day-tooltip-badge--outage-critical { color: #ff6b6b;       background: rgba(153,27,27,0.2);   border-color: #7f1d1d; }
+.day-tooltip-badge--unknown         { color: var(--text-dim); background: rgba(74,74,106,0.1); border-color: var(--border); }
+
+.day-tooltip-rows {
+    padding: 8px 0 6px;
     display: flex;
-    gap: 8px;
-    font-size: 0.6875rem;
+    flex-direction: column;
+}
+
+.day-tooltip-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 3px 12px;
+    gap: 12px;
+}
+
+.day-tooltip-row-label {
+    font-size: 0.7rem;
     color: var(--text-dim);
+    font-weight: 500;
+}
+
+.day-tooltip-row-value {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text);
     font-family: var(--mono);
-    border-top: 1px solid var(--border);
-    padding-top: 4px;
-    margin-top: 1px;
+    letter-spacing: 0.02em;
 }
 
 /* ── Downtime severity stages ────────────────────────────────── */
