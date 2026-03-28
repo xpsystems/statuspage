@@ -165,7 +165,6 @@ if ($db_driver !== 'none') {
     try {
         $pdo = db_connect($config);
         db_insert_check($pdo, $checked_at, $overall, $results);
-        db_prune($pdo, (int) ($config['db']['keep_days'] ?? 30));
     } catch (\Throwable $e) {
         // DB failed — fall back to JSON so we never lose a data point
         error_log('[xps-check] DB error: ' . $e->getMessage() . ' — falling back to JSON');

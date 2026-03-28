@@ -2,6 +2,7 @@
 declare(strict_types=1);
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/database.php';
+require_once __DIR__ . '/stats.php';
 
 $e   = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 $uri = strtok($_SERVER['REQUEST_URI'] ?? '/', '?');
@@ -17,7 +18,9 @@ function deployed_services(array $config): array
 }
 
 /**
- * Returns current status from cache, running check.php if cache is stale.
+ * Returns current status from cache immediately (never blocks).
+ * If the cache is stale, triggers a background check via check.php
+ * so the next page load (or SSE push) will have fresh data.
  */
 function get_cached_status(array $config): array
 {
@@ -28,19 +31,61 @@ function get_cached_status(array $config): array
         mkdir($cache_dir, 0755, true);
     }
 
+    $data = null;
+    $stale = true;
+
     if (file_exists($cache_file)) {
-        $age = time() - (int) filemtime($cache_file);
-        if ($age < $config['cache']['ttl']) {
-            $data = json_decode((string) file_get_contents($cache_file), true);
-            if (is_array($data)) {
-                return $data;
-            }
+        $raw = json_decode((string) file_get_contents($cache_file), true);
+        if (is_array($raw)) {
+            $data  = $raw;
+            $age   = time() - (int) filemtime($cache_file);
+            $stale = $age >= $config['cache']['ttl'];
         }
     }
 
-    // Cache stale or missing — run check.php inline
-    require __DIR__ . '/check.php';
-    return $payload; // check.php sets $payload
+    // If stale (or missing), kick off a background check so the NEXT
+    // request gets fresh data — but don't wait for it now.
+    if ($stale) {
+        trigger_background_check($config);
+    }
+
+    // Return whatever we have — even stale data is better than blocking.
+    return $data ?? ['checked_at' => time(), 'services' => [], 'overall' => 'unknown'];
+}
+
+/**
+ * Fires check.php in the background without blocking the current request.
+ * Uses fastcgi_finish_request() if available (FPM), otherwise a non-blocking
+ * shell exec as fallback.
+ */
+function trigger_background_check(array $config): void
+{
+    // Lock file prevents multiple concurrent background checks
+    $lock = $config['cache']['dir'] . '/check.lock';
+    if (file_exists($lock) && (time() - filemtime($lock)) < 60) {
+        return; // check already running
+    }
+    touch($lock);
+
+    if (function_exists('fastcgi_finish_request')) {
+        // FPM: finish the HTTP response, then run the check in the same process
+        register_shutdown_function(function () use ($config, $lock) {
+            fastcgi_finish_request();
+            require_once __DIR__ . '/check.php';
+            @unlink($lock);
+        });
+    } else {
+        // Non-FPM: fire a detached background process
+        $php = PHP_BINARY ?: 'php';
+        $cmd = escapeshellarg($php) . ' ' . escapeshellarg(__DIR__ . '/check.php');
+        if (PHP_OS_FAMILY === 'Windows') {
+            pclose(popen("start /B {$cmd}", 'r'));
+        } else {
+            exec("{$cmd} > /dev/null 2>&1 & echo \$!", $out);
+        }
+        // Remove lock after a moment (background process will overwrite cache)
+        register_shutdown_function(fn() => @unlink($lock));
+    }
 }
 
 // ── History helpers (DB-aware) ────────────────────────────────────────────────
@@ -93,6 +138,25 @@ function history_for_slug_db(array $config, string $slug, int $limit = 90): arra
     return history_for_slug(load_history($config), $slug, $limit);
 }
 
+/**
+ * Returns 90-day aggregated data for a slug.
+ * Uses DB if available, falls back to JSON history via stats_days().
+ */
+function days_for_slug_db(array $config, string $slug, int $days = 90): array
+{
+    $driver = $config['db']['driver'] ?? 'none';
+    if ($driver !== 'none') {
+        try {
+            $pdo = db_connect($config);
+            return db_days_for_slug($pdo, $slug, $days);
+        } catch (\Throwable $e) {
+            error_log('[xps-index] DB error: ' . $e->getMessage());
+        }
+    }
+    // JSON fallback — load all history and aggregate via stats.php
+    $rows = history_for_slug(load_history($config), $slug, 99999);
+    return stats_days($rows, $days);
+}
 function build_full_status(array $config): array
 {
     $cached     = get_cached_status($config);
@@ -134,17 +198,30 @@ function build_full_status(array $config): array
     $down_count     = count(array_filter($statuses, fn($s) => $s === 'down'));
     $degraded_count = count(array_filter($statuses, fn($s) => $s === 'degraded'));
 
-    $overall = match(true) {
-        $down_count > 0     => 'major_outage',
-        $degraded_count > 0 => 'partial_outage',
-        default             => 'operational',
-    };
+    // If cache was empty (no services resolved), keep overall as 'unknown'
+    // so the page doesn't falsely show "Major System Outage" on first load.
+    if (empty($services)) {
+        $overall = $cached['overall'] ?? 'unknown';
+    } else {
+        $overall = match(true) {
+            $down_count > 0     => 'major_outage',
+            $degraded_count > 0 => 'partial_outage',
+            default             => 'operational',
+        };
+    }
 
     return [
         'overall'    => $overall,
         'checked_at' => $checked_at,
         'services'   => [...$services, ...$not_deployed],
     ];
+}
+
+// ── SSE route (/events) ───────────────────────────────────────────────────────
+
+if ($uri === '/events') {
+    require __DIR__ . '/events.php';
+    exit;
 }
 
 // ── API routes ────────────────────────────────────────────────────────────────
@@ -237,26 +314,21 @@ if (str_starts_with($uri, '/api')) {
 
     if (preg_match('#^/api/history/([a-z0-9\-]+)$#', $uri, $m)) {
         $slug  = $m[1];
-        $limit = min((int) ($_GET['limit'] ?? 90), 1440);
-        $entries = history_for_slug_db($config, $slug, $limit);
-        if (empty($entries)) {
+        $days  = min((int) ($_GET['days'] ?? 90), 3650);
+        $rows  = history_for_slug_db($config, $slug, 99999);
+        if (empty($rows)) {
             http_response_code(404);
             echo json_encode(['error' => 'No history found for slug', 'slug' => $slug], JSON_PRETTY_PRINT);
             exit;
         }
-        $latencies = array_filter(array_column($entries, 'latency_ms'), fn($v) => $v !== null);
+        // Filter to requested window
+        $since = time() - ($days * 86400);
+        $rows  = array_values(array_filter($rows, fn($r) => $r['ts'] >= $since));
         echo json_encode([
             'slug'    => $slug,
-            'count'   => count($entries),
-            'stats'   => [
-                'avg_latency_ms' => count($latencies) ? (int) round(array_sum($latencies) / count($latencies)) : null,
-                'min_latency_ms' => count($latencies) ? (int) min($latencies) : null,
-                'max_latency_ms' => count($latencies) ? (int) max($latencies) : null,
-                'uptime_pct'     => count($entries)
-                    ? round(count(array_filter($entries, fn($e) => $e['status'] === 'up')) / count($entries) * 100, 2)
-                    : null,
-            ],
-            'entries' => $entries,
+            'days'    => $days,
+            'stats'   => stats_summary($rows),
+            'by_day'  => stats_days($rows, $days),
         ], JSON_PRETTY_PRINT);
         exit;
     }
@@ -286,10 +358,10 @@ foreach ($config['groups'] as $group) {
     );
 }
 
-// Load history for sparklines (last 60 checks per deployed service)
+// Load 90-day aggregated history per deployed service (for uptime bars)
 $svc_history = [];
 foreach (deployed_services($config) as $svc) {
-    $svc_history[$svc['slug']] = history_for_slug_db($config, $svc['slug'], 60);
+    $svc_history[$svc['slug']] = days_for_slug_db($config, $svc['slug'], 90);
 }
 
 $playground_base = $config['site']['playground'];
@@ -307,6 +379,16 @@ $api_base        = $config['site']['api_base'];
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
+<script>
+// Inline theme init — prevents flash of wrong theme
+(function(){
+  try {
+    var s = localStorage.getItem('xps-theme') || 'system';
+    var r = s === 'system' ? (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : s;
+    document.documentElement.setAttribute('data-theme', r);
+  } catch(e) {}
+})();
+</script>
 </head>
 <body>
 
@@ -388,11 +470,17 @@ $api_base        = $config['site']['api_base'];
           <line x1="12" y1="9" x2="12" y2="13"/>
           <line x1="12" y1="17" x2="12.01" y2="17"/>
         </svg>
-        <?php else: ?>
+        <?php elseif ($overall === 'major_outage'): ?>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"/>
           <line x1="15" y1="9" x2="9" y2="15"/>
           <line x1="9" y1="9" x2="15" y2="15"/>
+        </svg>
+        <?php else: ?>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
         </svg>
         <?php endif; ?>
       </div>
@@ -402,8 +490,10 @@ $api_base        = $config['site']['api_base'];
             All Systems Operational
           <?php elseif ($overall === 'partial_outage'): ?>
             Partial System Outage
-          <?php else: ?>
+          <?php elseif ($overall === 'major_outage'): ?>
             Major System Outage
+          <?php else: ?>
+            Checking status&hellip;
           <?php endif; ?>
         </h1>
         <p class="hero-bar-sub">
@@ -434,11 +524,10 @@ $api_base        = $config['site']['api_base'];
         <div class="service-list">
           <?php foreach ($group_services as $svc): ?>
           <?php
-            $hist    = $svc['is_deployed'] ? ($svc_history[$svc['slug']] ?? []) : [];
-            $up_cnt  = count(array_filter($hist, fn($h) => $h['status'] === 'up'));
-            $uptime  = count($hist) > 0 ? round($up_cnt / count($hist) * 100, 1) : null;
-            $latencies = array_filter(array_column($hist, 'latency_ms'), fn($v) => $v !== null);
-            $avg_lat = count($latencies) ? (int) round(array_sum($latencies) / count($latencies)) : null;
+            $days_hist = $svc['is_deployed'] ? ($svc_history[$svc['slug']] ?? []) : [];
+            $summary   = !empty($days_hist) ? stats_summary_from_days($days_hist) : null;
+            $uptime    = $summary['uptime_pct']     ?? null;
+            $avg_lat   = $summary['avg_latency_ms'] ?? null;
           ?>
           <div
             class="service-row<?= !$svc['is_deployed'] ? ' service-row--not-deployed' : '' ?>"
@@ -468,12 +557,12 @@ $api_base        = $config['site']['api_base'];
                 <?php endif; ?>
               </div>
             </div>
-            <?php if ($svc['is_deployed'] && count($hist) > 0): ?>
+            <?php if ($svc['is_deployed'] && count($days_hist) > 0): ?>
             <div class="service-history">
-              <div class="uptime-bar" aria-label="Uptime history">
-                <?php foreach ($hist as $h): ?>
-                <span class="uptime-tick uptime-tick--<?= $e($h['status']) ?>"
-                      title="<?= $e(date('Y-m-d H:i', $h['ts'])) ?> — <?= $e($h['status']) ?><?= $h['latency_ms'] !== null ? ' — ' . (int)$h['latency_ms'] . 'ms' : '' ?>"></span>
+              <div class="uptime-bar" aria-label="90-day uptime history">
+                <?php foreach ($days_hist as $d): ?>
+                <?php $ds = stats_day_status($d); ?>
+                <span class="uptime-tick uptime-tick--<?= $e($ds) ?>"></span>
                 <?php endforeach; ?>
               </div>
               <div class="uptime-meta">
@@ -483,7 +572,7 @@ $api_base        = $config['site']['api_base'];
                 <?php if ($avg_lat !== null): ?>
                 <span class="uptime-avg">avg <?= $avg_lat ?>ms</span>
                 <?php endif; ?>
-                <span class="uptime-window"><?= count($hist) ?> checks</span>
+                <span class="uptime-window">90 days</span>
               </div>
             </div>
             <?php endif; ?>
@@ -639,11 +728,23 @@ $api_base        = $config['site']['api_base'];
   </div>
 </footer>
 
+<?php
+$cache_age = file_exists($config['cache']['path'])
+    ? (time() - (int) filemtime($config['cache']['path']))
+    : null;
+?>
 <script
   src="script.js"
   defer
   data-api-base="<?= $e($api_base) ?>"
+  data-sse-url="/events"
   data-playground="<?= $e($playground_base) ?>"
+  data-cache-age="<?= $cache_age !== null ? (int)$cache_age : '' ?>"
 ></script>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(function(){});
+}
+</script>
 </body>
 </html>

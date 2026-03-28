@@ -11,7 +11,7 @@ $config = [
         'mtex_status' => 'https://status.mtex.dev',
         'api_base'    => 'https://status.xpsystems.eu',
         'playground'  => 'https://api-sandbox.de/playground.html',
-        'version'     => '1.5.0',
+        'version'     => '3.3.0',
     ],
     'cache' => [
         'ttl'  => 90,
@@ -24,8 +24,11 @@ $config = [
     ],
     // ── Database (optional — set driver to 'none' to use JSON files only) ───
     // driver: 'sqlite' | 'mysql' | 'none'
+    // Before enabling sqlite or mysql, verify the extension is loaded:
+    //   sqlite: php -m | grep pdo_sqlite
+    //   mysql:  php -m | grep pdo_mysql
     'db' => [
-        'driver' => 'sqlite',           // ← change to 'mysql' or 'none'
+        'driver' => 'none',             // ← change to 'sqlite' or 'mysql' once verified
 
         // SQLite — file path (relative to this file)
         'sqlite_path' => __DIR__ . '/cache/status.db',
@@ -36,9 +39,6 @@ $config = [
         'mysql_dbname'   => 'xpsystems_status',
         'mysql_user'     => 'db_user',
         'mysql_password' => 'db_password',
-
-        // How many days of history to keep (pruned on each check run)
-        'keep_days' => 30,
     ],
     'ping' => [
         'timeout'   => 6,
@@ -104,6 +104,30 @@ $config = [
             'group'       => 'Core',
             'url'         => 'https://xpsys.de',
             'ping_url'    => 'https://xpsys.de',
+            'is_deployed' => true,
+        ],
+        [
+            'slug'        => 'contact-xpsystems-eu',
+            'name'        => 'contact.xpsystems.eu',
+            'group'       => 'Core',
+            'url'         => 'https://contact.xpsystems.eu',
+            'ping_url'    => 'https://contact.xpsystems.eu',
+            'is_deployed' => true,
+        ],
+        [
+            'slug'        => 'domains-xpsystems-eu',
+            'name'        => 'domains.xpsystems.eu',
+            'group'       => 'Core',
+            'url'         => 'https://domains.xpsystems.eu',
+            'ping_url'    => 'https://domains.xpsystems.eu',
+            'is_deployed' => true,
+        ],
+        [
+            'slug'        => 'opensource-xpsystems-eu',
+            'name'        => 'opensource.xpsystems.eu',
+            'group'       => 'Core',
+            'url'         => 'https://opensource.xpsystems.eu',
+            'ping_url'    => 'https://opensource.xpsystems.eu',
             'is_deployed' => true,
         ],
 
