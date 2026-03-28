@@ -4,31 +4,40 @@ declare(strict_types=1);
 /**
  * database.php — xpsystems statuspage
  *
- * Thin PDO wrapper that supports both SQLite and MySQL.
- * The driver is selected via $config['db']['driver'].
+ * Thin PDO wrapper supporting SQLite and MySQL.
+ * Driver is selected via $config['db']['driver'].
  *
- * SQLite  → file-based, zero config, good for single-server setups.
- * MySQL   → use when you need multi-node access or external dashboards.
+ * SQLite  → requires pdo_sqlite PHP extension.
+ *           Check with: php -m | grep -i sqlite
+ * MySQL   → requires pdo_mysql PHP extension.
+ *           Check with: php -m | grep -i mysql
  *
- * Schema (auto-created on first connect):
- *
- *   checks
- *     id          INTEGER PK AUTOINCREMENT
- *     checked_at  INTEGER  (unix timestamp)
- *     overall     TEXT     (operational | partial_outage | major_outage)
- *
- *   check_results
- *     id          INTEGER PK AUTOINCREMENT
- *     check_id    INTEGER  FK → checks.id
- *     slug        TEXT
- *     status      TEXT     (up | degraded | down | unknown)
- *     http_code   INTEGER  nullable
- *     latency_ms  INTEGER  nullable
+ * If neither extension is available, set driver = 'none' in config.php
+ * to use the JSON file fallback instead.
  */
+
+/**
+ * Returns true if the requested driver's PDO extension is loaded.
+ */
+function db_driver_available(string $driver): bool
+{
+    return match($driver) {
+        'sqlite' => extension_loaded('pdo_sqlite'),
+        'mysql'  => extension_loaded('pdo_mysql'),
+        default  => false,
+    };
+}
 
 function db_connect(array $config): PDO
 {
     $db = $config['db'];
+
+    if (!db_driver_available($db['driver'])) {
+        throw new \RuntimeException(
+            "PDO driver for '{$db['driver']}' is not available. " .
+            "Install the pdo_{$db['driver']} PHP extension, or set db.driver = 'none' in config.php."
+        );
+    }
 
     if ($db['driver'] === 'sqlite') {
         $dir = dirname($db['sqlite_path']);
@@ -36,8 +45,9 @@ function db_connect(array $config): PDO
             mkdir($dir, 0755, true);
         }
         $pdo = new PDO('sqlite:' . $db['sqlite_path']);
-        $pdo->exec('PRAGMA journal_mode=WAL');   // safe for concurrent reads
+        $pdo->exec('PRAGMA journal_mode=WAL');
         $pdo->exec('PRAGMA foreign_keys=ON');
+
     } elseif ($db['driver'] === 'mysql') {
         $dsn = sprintf(
             'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
@@ -51,7 +61,9 @@ function db_connect(array $config): PDO
             PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4",
         ]);
     } else {
-        throw new \InvalidArgumentException("Unknown DB driver: {$db['driver']}. Use 'sqlite' or 'mysql'.");
+        throw new \InvalidArgumentException(
+            "Unknown DB driver: '{$db['driver']}'. Use 'sqlite', 'mysql', or 'none'."
+        );
     }
 
     $pdo->setAttribute(PDO::ATTR_ERRMODE,            PDO::ERRMODE_EXCEPTION);
@@ -64,38 +76,71 @@ function db_connect(array $config): PDO
 
 function db_migrate(PDO $pdo, string $driver): void
 {
-    $ai = $driver === 'mysql' ? 'INT AUTO_INCREMENT' : 'INTEGER';
+    if ($driver === 'mysql') {
+        // MySQL: use VARCHAR for indexed columns (TEXT columns can't be indexed
+        // without a prefix, and prefix indexes are unreliable for FK cascades).
+        // overall max length: 'partial_outage' = 14 chars → VARCHAR(32) is safe.
+        // slug max length: longest realistic slug ~64 chars → VARCHAR(128).
+        // status max length: 'not_deployed' = 12 chars → VARCHAR(32).
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS checks (
+                id         INT AUTO_INCREMENT PRIMARY KEY,
+                checked_at INT          NOT NULL,
+                overall    VARCHAR(32)  NOT NULL,
+                INDEX idx_checks_ts (checked_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
 
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS checks (
-            id         $ai PRIMARY KEY,
-            checked_at INTEGER  NOT NULL,
-            overall    TEXT     NOT NULL
-        )
-    ");
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS check_results (
+                id         INT AUTO_INCREMENT PRIMARY KEY,
+                check_id   INT          NOT NULL,
+                slug       VARCHAR(128) NOT NULL,
+                status     VARCHAR(32)  NOT NULL,
+                http_code  SMALLINT,
+                latency_ms INT,
+                INDEX idx_cr_slug_check (slug, check_id),
+                CONSTRAINT fk_cr_check FOREIGN KEY (check_id)
+                    REFERENCES checks(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
 
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS check_results (
-            id         $ai PRIMARY KEY,
-            check_id   INTEGER  NOT NULL,
-            slug       TEXT     NOT NULL,
-            status     TEXT     NOT NULL,
-            http_code  INTEGER,
-            latency_ms INTEGER,
-            FOREIGN KEY (check_id) REFERENCES checks(id) ON DELETE CASCADE
-        )
-    ");
+    } else {
+        // SQLite
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS checks (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                checked_at INTEGER NOT NULL,
+                overall    TEXT    NOT NULL
+            )
+        ");
 
-    // Index for fast per-slug history queries
-    $pdo->exec("
-        CREATE INDEX IF NOT EXISTS idx_check_results_slug
-        ON check_results (slug, check_id)
-    ");
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS check_results (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                check_id   INTEGER NOT NULL,
+                slug       TEXT    NOT NULL,
+                status     TEXT    NOT NULL,
+                http_code  INTEGER,
+                latency_ms INTEGER,
+                FOREIGN KEY (check_id) REFERENCES checks(id) ON DELETE CASCADE
+            )
+        ");
+
+        $pdo->exec("
+            CREATE INDEX IF NOT EXISTS idx_cr_slug_check
+            ON check_results (slug, check_id)
+        ");
+
+        $pdo->exec("
+            CREATE INDEX IF NOT EXISTS idx_checks_ts
+            ON checks (checked_at)
+        ");
+    }
 }
 
 /**
  * Persist one full check run to the database.
- * $results = [ slug => ['status'=>..., 'code'=>..., 'latency_ms'=>...], ... ]
  */
 function db_insert_check(PDO $pdo, int $checked_at, string $overall, array $results): int
 {
@@ -122,8 +167,7 @@ function db_insert_check(PDO $pdo, int $checked_at, string $overall, array $resu
 }
 
 /**
- * Load the last $limit check rows for a given slug.
- * Returns [ ['ts', 'status', 'latency_ms', 'http_code'], ... ]
+ * Load the last $limit check rows for a given slug (chronological order).
  */
 function db_history_for_slug(PDO $pdo, string $slug, int $limit = 90): array
 {
@@ -139,14 +183,11 @@ function db_history_for_slug(PDO $pdo, string $slug, int $limit = 90): array
         LIMIT  ?
     ");
     $stmt->execute([$slug, $limit]);
-    $rows = $stmt->fetchAll();
-    // Return in chronological order (oldest first)
-    return array_reverse($rows);
+    return array_reverse($stmt->fetchAll());
 }
 
 /**
  * Load the last $limit full check entries (all slugs per check).
- * Returns [ ['ts', 'overall', 'services' => [...]], ... ]
  */
 function db_history_full(PDO $pdo, int $limit = 90): array
 {
@@ -163,7 +204,7 @@ function db_history_full(PDO $pdo, int $limit = 90): array
         return [];
     }
 
-    $ids       = array_column($checks, 'id');
+    $ids          = array_column($checks, 'id');
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
 
     $stmt = $pdo->prepare("
@@ -172,11 +213,9 @@ function db_history_full(PDO $pdo, int $limit = 90): array
         WHERE  check_id IN ($placeholders)
     ");
     $stmt->execute($ids);
-    $results = $stmt->fetchAll();
 
-    // Group results by check_id
     $by_check = [];
-    foreach ($results as $r) {
+    foreach ($stmt->fetchAll() as $r) {
         $by_check[$r['check_id']][$r['slug']] = [
             'status'     => $r['status'],
             'latency_ms' => $r['latency_ms'],
@@ -197,8 +236,7 @@ function db_history_full(PDO $pdo, int $limit = 90): array
 }
 
 /**
- * Prune checks older than $keep_days days.
- * Cascades to check_results via FK.
+ * Prune checks older than $keep_days days (cascades to check_results via FK).
  */
 function db_prune(PDO $pdo, int $keep_days = 30): int
 {

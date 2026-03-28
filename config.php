@@ -24,8 +24,11 @@ $config = [
     ],
     // ── Database (optional — set driver to 'none' to use JSON files only) ───
     // driver: 'sqlite' | 'mysql' | 'none'
+    // Before enabling sqlite or mysql, verify the extension is loaded:
+    //   sqlite: php -m | grep pdo_sqlite
+    //   mysql:  php -m | grep pdo_mysql
     'db' => [
-        'driver' => 'sqlite',           // ← change to 'mysql' or 'none'
+        'driver' => 'none',             // ← change to 'sqlite' or 'mysql' once verified
 
         // SQLite — file path (relative to this file)
         'sqlite_path' => __DIR__ . '/cache/status.db',
