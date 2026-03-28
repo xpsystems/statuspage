@@ -95,7 +95,6 @@ function ping_url(string $url, int $timeout, string $ua): array
     curl_exec($ch);
     $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $err  = curl_errno($ch);
-    curl_close($ch);
 
     $latency = (int) round((microtime(true) - $start) * 1000);
 
@@ -278,7 +277,7 @@ $api_base        = $config['site']['api_base'];
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
@@ -594,7 +593,7 @@ $api_base        = $config['site']['api_base'];
 </footer>
 
 <script
-  src="/script.js"
+  src="script.js"
   defer
   data-api-base="<?= $e($api_base) ?>"
   data-playground="<?= $e($playground_base) ?>"
